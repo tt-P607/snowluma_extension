@@ -199,12 +199,13 @@ class _SnowLumaBaseAction(BaseAction):
 # ==============================================================================
 
 class MuteGroupMemberAction(_SnowLumaBaseAction):
-    """群成员禁言。"""
+    """群成员禁言/解禁。"""
 
     action_name: str = "mute_group_member"
     action_description: str = (
-        "在当前群聊中对指定用户执行禁言。需要你为群主或管理员，且目标权限低于你。"
+        "在当前群聊中对指定用户执行禁言或解除禁言。需要你为群主或管理员，且目标权限低于你。"
         "执行前请确认你的身份，如不确定可先用 get_group_member_info 查询你的角色。"
+        "传入 duration_seconds=0 表示解除禁言。"
     )
     chat_type: ChatType = ChatType.GROUP
 
@@ -213,15 +214,15 @@ class MuteGroupMemberAction(_SnowLumaBaseAction):
 
     async def execute(
         self,
-        user_id: Annotated[str, "要禁言的目标 QQ 号"],
-        duration_seconds: Annotated[int, "禁言时长（秒），例如 600 表示 10 分钟"] = 600,
+        user_id: Annotated[str, "要禁言/解禁的目标 QQ 号"],
+        duration_seconds: Annotated[int, "禁言时长（秒），0 表示解除禁言，例如 600 表示 10 分钟"] = 600,
     ) -> tuple[bool, str]:
         group_id = _get_group_id_from_context(self)
         if not group_id:
             return False, "该动作只能在群聊上下文使用：未获取到 group_id。"
 
-        if duration_seconds <= 0:
-            return False, "duration_seconds 必须为正整数（单位：秒）。"
+        if duration_seconds < 0:
+            return False, "duration_seconds 不能为负数（0 表示解除禁言）。"
 
         params = {
             "group_id": _coerce_int_if_digit(group_id),
@@ -231,6 +232,8 @@ class MuteGroupMemberAction(_SnowLumaBaseAction):
 
         ok, msg = await _call_snowluma_api(action_name="set_group_ban", params=params)
         if ok:
+            if duration_seconds == 0:
+                return True, f"已解除用户 {user_id} 的禁言。"
             return True, f"已禁言用户 {user_id}（{duration_seconds} 秒）。"
         return False, msg
 
@@ -243,7 +246,7 @@ class UnmuteGroupMemberAction(_SnowLumaBaseAction):
     chat_type: ChatType = ChatType.GROUP
 
     async def _feature_enabled(self, config: Any) -> bool:
-        return bool(getattr(getattr(config, "features", None), "enable_unmute", False))
+        return bool(getattr(getattr(config, "features", None), "enable_mute", False))
 
     async def execute(
         self,
@@ -266,58 +269,103 @@ class UnmuteGroupMemberAction(_SnowLumaBaseAction):
 
 
 class ReactToMessageAction(_SnowLumaBaseAction):
-    """对指定消息添加表情回应。"""
+    """对指定消息添加表情回应（支持批量）。"""
 
     action_name: str = "react_to_message"
     action_description: str = (
-        "对指定消息添加一个表情回应。"
-        "使用前请先调用 get_qq_face_list 工具查询可用的表情列表，从中选择合适的表情。"
-        "优先使用 emoji_id（数字字符串）作为参数，也可以使用表情名称（如'赞'、'爱心'、'笑哭'）。"
+        "对一条或多条消息添加表情回应（贴表情）。支持批量操作。"
+        "传入 reactions 参数：一个 JSON 数组，每项格式为 {\"message_id\": \"消息ID\", \"emoji_id\": \"表情ID或名称\"}。"
+        "可以对同一条消息贴多个表情，也可以对不同消息分别贴表情。"
+        "使用前请先调用 get_qq_face_list 工具查询可用的表情列表。"
+        "emoji_id 优先使用数字 ID（如 '76'），也可以使用表情名称（如 '赞'、'爱心'、'笑哭'）。"
+        "示例：[{\"message_id\": \"12345\", \"emoji_id\": \"76\"}, {\"message_id\": \"12345\", \"emoji_id\": \"66\"}]"
     )
     chat_type: ChatType = ChatType.GROUP
 
     async def _feature_enabled(self, config: Any) -> bool:
         return bool(getattr(getattr(config, "features", None), "enable_react", False))
 
+    @staticmethod
+    def _resolve_emoji_id(raw_emoji: str) -> str | None:
+        """将表情名称解析为数字 ID，返回 None 表示无法识别。"""
+        raw_emoji = raw_emoji.strip()
+        if raw_emoji.isdigit():
+            return raw_emoji
+
+        from plugins.snowluma_adapter.src.event_models import QQ_FACE
+
+        search_key = raw_emoji
+        if not search_key.startswith("[表情："):
+            search_key = f"[表情：{search_key}]"
+
+        for face_id, face_name in QQ_FACE.items():
+            if face_name == search_key or search_key in face_name:
+                return face_id
+        return None
+
     async def execute(
         self,
-        message_id: Annotated[str, "要回应的消息 ID"],
-        emoji_id: Annotated[str, "表情 ID（数字，如 '76'）或表情名称（如 '赞'、'爱心'、'笑哭'）。优先使用 ID"],
+        reactions: Annotated[str, "表情回应数组的 JSON 字符串。每项含 message_id 和 emoji_id"],
     ) -> tuple[bool, str]:
-        # 如果传入的不是纯数字，尝试从 QQ_FACE 表中按名称查找对应 ID
-        raw_emoji = str(emoji_id).strip()
-        resolved_emoji_id = raw_emoji
+        import asyncio
+        import random
+        import orjson
 
-        if not raw_emoji.isdigit():
-            from plugins.snowluma_adapter.src.event_models import QQ_FACE
+        # 解析 reactions JSON
+        try:
+            reaction_list = orjson.loads(reactions)
+        except Exception as e:
+            return False, f"reactions 参数不是有效的 JSON：{e}"
 
-            # 在表情映射值中搜索匹配的名称
-            # QQ_FACE 格式: {"76": "[表情：赞]"}，用户可能传 "赞" 或 "[表情：赞]"
-            search_key = raw_emoji
-            if not search_key.startswith("[表情："):
-                search_key = f"[表情：{search_key}]"
+        if not isinstance(reaction_list, list) or not reaction_list:
+            return False, "reactions 必须是非空 JSON 数组。"
 
-            found_id = None
-            for face_id, face_name in QQ_FACE.items():
-                if face_name == search_key or search_key in face_name:
-                    found_id = face_id
-                    break
+        # 预解析所有表情 ID
+        tasks: list[tuple[str, str]] = []
+        for item in reaction_list:
+            if not isinstance(item, dict):
+                continue
+            msg_id = str(item.get("message_id", "")).strip()
+            raw_emoji = str(item.get("emoji_id", "")).strip()
+            if not msg_id or not raw_emoji:
+                continue
 
-            if found_id:
-                resolved_emoji_id = found_id
-            else:
+            resolved = self._resolve_emoji_id(raw_emoji)
+            if resolved is None:
                 return False, f"无法识别的表情：{raw_emoji}。请使用 get_qq_face_list 工具查询可用的表情 ID。"
+            tasks.append((msg_id, resolved))
 
-        params = {
-            "message_id": _coerce_int_if_digit(message_id),
-            "emoji_id": resolved_emoji_id,
-            "set": True,
-        }
+        if not tasks:
+            return False, "没有有效的表情回应任务。"
 
-        ok, msg = await _call_snowluma_api(action_name="set_msg_emoji_like", params=params)
-        if ok:
-            return True, f"已对消息 {message_id} 添加表情回应（emoji_id={resolved_emoji_id}）。"
-        return False, msg
+        # 逐个执行，每次间隔 0.5 秒
+        success_count = 0
+        fail_count = 0
+        fail_details: list[str] = []
+
+        for i, (msg_id, emoji_id) in enumerate(tasks):
+            if i > 0:
+                await asyncio.sleep(0.5 + random.uniform(-0.1, 0.1))
+
+            params = {
+                "message_id": _coerce_int_if_digit(msg_id),
+                "emoji_id": emoji_id,
+                "set": True,
+            }
+
+            ok, msg = await _call_snowluma_api(action_name="set_msg_emoji_like", params=params)
+            if ok:
+                success_count += 1
+            else:
+                fail_count += 1
+                fail_details.append(f"消息{msg_id}/表情{emoji_id}: {msg[:50]}")
+
+        if fail_count == 0:
+            return True, f"已成功添加 {success_count} 个表情回应。"
+        return False, (
+            f"表情回应完成：成功 {success_count}/{len(tasks)}，失败 {fail_count}。"
+            f"\n失败详情：{'；'.join(fail_details[:5])}"
+        )
 
 
 class SendFaceAction(_SnowLumaBaseAction):
@@ -499,10 +547,28 @@ class GroupSignAction(_SnowLumaBaseAction):
         if not group_id:
             return False, "该动作只能在群聊上下文使用：未获取到 group_id。"
 
+        # 检查今天是否已打过卡
+        from datetime import datetime
+
+        from src.app.plugin_system.api import storage_api
+
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        try:
+            record = await storage_api.load_json("snowluma_extension", "sign_record")
+            if record and record.get("last_sign_date") == today_str:
+                return True, "今日已打过卡，无需重复打卡。"
+        except Exception:
+            pass
+
         params = {"group_id": _coerce_int_if_digit(group_id)}
 
         ok, msg = await _call_snowluma_api(action_name="set_group_sign", params=params)
         if ok:
+            # 记录今天已打卡
+            try:
+                await storage_api.save_json("snowluma_extension", "sign_record", {"last_sign_date": today_str})
+            except Exception:
+                pass
             return True, "已执行群打卡。"
 
         return False, msg
@@ -720,10 +786,213 @@ class DeleteGroupNoticeAction(_SnowLumaBaseAction):
         return False, msg
 
 
+class SendGroupForwardMsgAction(_SnowLumaBaseAction):
+    """发送群合并转发消息。"""
+
+    action_name: str = "send_group_forward_msg"
+    action_description: str = (
+        "在当前群聊中发送合并转发消息（合并转发卡片）。"
+        "传入 messages 参数：一个 JSON 数组，每个元素是一个转发节点对象。"
+        "转发节点格式：{\"nickname\": \"发送者昵称\", \"user_id\": \"QQ号\", \"content\": [消息段]}。"
+        "content 是 OneBot 消息段数组，支持：文本 {\"type\": \"text\", \"data\": {\"text\": \"内容\"}}、"
+        "表情 {\"type\": \"face\", \"data\": {\"id\": \"表情ID\"}}。"
+        "示例：[{\"nickname\": \"小明\", \"user_id\": \"10001\", \"content\": [{\"type\": \"text\", \"data\": {\"text\": \"你好\"}}]}]"
+    )
+    chat_type: ChatType = ChatType.GROUP
+
+    async def _feature_enabled(self, config: Any) -> bool:
+        return bool(getattr(getattr(config, "features", None), "enable_send_forward_msg", False))
+
+    async def execute(
+        self,
+        messages: Annotated[str, "转发消息节点数组的 JSON 字符串。每个节点包含 nickname（昵称）、user_id（QQ号）、content（消息段数组）"],
+    ) -> tuple[bool, str]:
+        import orjson
+
+        group_id = _get_group_id_from_context(self)
+        if not group_id:
+            return False, "该动作只能在群聊上下文使用：未获取到 group_id。"
+
+        # 解析 messages JSON
+        try:
+            parsed_messages = orjson.loads(messages)
+        except Exception as e:
+            return False, f"messages 参数不是有效的 JSON：{e}"
+
+        if not isinstance(parsed_messages, list) or not parsed_messages:
+            return False, "messages 必须是非空 JSON 数组。"
+
+        params = {
+            "group_id": _coerce_int_if_digit(group_id),
+            "messages": parsed_messages,
+        }
+
+        ok, msg = await _call_snowluma_api(action_name="send_group_forward_msg", params=params)
+        if ok:
+            return True, f"已成功发送合并转发消息（共 {len(parsed_messages)} 条节点）。"
+        return False, msg
+
+
+class SetEssenceMsgAction(_SnowLumaBaseAction):
+    """设置精华消息。"""
+
+    action_name: str = "set_essence_msg"
+    action_description: str = (
+        "将指定消息设为群精华消息。需要提供消息ID（message_id）。"
+        "需要你为群主或管理员。执行前请确认你的身份，如不确定可先用 get_group_member_info 查询你的角色。"
+    )
+    chat_type: ChatType = ChatType.GROUP
+
+    async def _feature_enabled(self, config: Any) -> bool:
+        return bool(getattr(getattr(config, "features", None), "enable_essence_msg", False))
+
+    async def execute(
+        self,
+        message_id: Annotated[str, "要设为精华的消息 ID"],
+    ) -> tuple[bool, str]:
+        params = {
+            "message_id": _coerce_int_if_digit(message_id),
+        }
+
+        ok, msg = await _call_snowluma_api(action_name="set_essence_msg", params=params)
+        if ok:
+            return True, f"已将消息 {message_id} 设为精华消息。"
+        return False, msg
+
+
+class DeleteEssenceMsgAction(_SnowLumaBaseAction):
+    """移除精华消息。"""
+
+    action_name: str = "delete_essence_msg"
+    action_description: str = (
+        "将指定消息从群精华消息中移除。需要提供消息ID（message_id）。"
+        "需要你为群主或管理员。执行前请确认你的身份，如不确定可先用 get_group_member_info 查询你的角色。"
+    )
+    chat_type: ChatType = ChatType.GROUP
+
+    async def _feature_enabled(self, config: Any) -> bool:
+        return bool(getattr(getattr(config, "features", None), "enable_essence_msg", False))
+
+    async def execute(
+        self,
+        message_id: Annotated[str, "要移除精华的消息 ID"],
+    ) -> tuple[bool, str]:
+        params = {
+            "message_id": _coerce_int_if_digit(message_id),
+        }
+
+        ok, msg = await _call_snowluma_api(action_name="delete_essence_msg", params=params)
+        if ok:
+            return True, f"已将消息 {message_id} 从精华消息中移除。"
+        return False, msg
+
+
+class ForwardGroupSingleMsgAction(_SnowLumaBaseAction):
+    """转发单条消息到群。"""
+
+    action_name: str = "forward_group_single_msg"
+    action_description: str = (
+        "将一条已有消息（通过 message_id 标识）转发到指定的群。"
+        "可以转发任何类型的消息，包括文字、图片、合并转发等。"
+        "需要提供要转发的消息 ID 和目标群号。"
+    )
+    chat_type: ChatType = ChatType.ALL
+
+    async def _feature_enabled(self, config: Any) -> bool:
+        return bool(getattr(getattr(config, "features", None), "enable_send_forward_msg", False))
+
+    async def execute(
+        self,
+        message_id: Annotated[str, "要转发的消息 ID"],
+        group_id: Annotated[str, "目标群号"],
+    ) -> tuple[bool, str]:
+        params = {
+            "message_id": _coerce_int_if_digit(message_id),
+            "group_id": _coerce_int_if_digit(group_id),
+        }
+
+        ok, msg = await _call_snowluma_api(action_name="forward_group_single_msg", params=params)
+        if ok:
+            return True, f"已将消息 {message_id} 转发到群 {group_id}。"
+        return False, msg
+
+
+class ForwardFriendSingleMsgAction(_SnowLumaBaseAction):
+    """转发单条消息给好友。"""
+
+    action_name: str = "forward_friend_single_msg"
+    action_description: str = (
+        "将一条已有消息（通过 message_id 标识）转发给指定好友。"
+        "可以转发任何类型的消息，包括文字、图片、合并转发等。"
+        "需要提供要转发的消息 ID 和目标好友 QQ 号。"
+    )
+    chat_type: ChatType = ChatType.ALL
+
+    async def _feature_enabled(self, config: Any) -> bool:
+        return bool(getattr(getattr(config, "features", None), "enable_send_forward_msg", False))
+
+    async def execute(
+        self,
+        message_id: Annotated[str, "要转发的消息 ID"],
+        user_id: Annotated[str, "目标好友 QQ 号"],
+    ) -> tuple[bool, str]:
+        params = {
+            "message_id": _coerce_int_if_digit(message_id),
+            "user_id": _coerce_int_if_digit(user_id),
+        }
+
+        ok, msg = await _call_snowluma_api(action_name="forward_friend_single_msg", params=params)
+        if ok:
+            return True, f"已将消息 {message_id} 转发给好友 {user_id}。"
+        return False, msg
+
+
+class SendLikeAction(_SnowLumaBaseAction):
+    """给他人主页点赞。"""
+
+    action_name: str = "send_like"
+    action_description: str = (
+        "给指定 QQ 用户的主页点赞。不需要好友关系，只要对方 QQ 号存在即可。"
+        "点赞数量由配置决定（默认 10 个，非 SVIP 每日上限 10 次/人，SVIP 20 次/人）。"
+        "每日对同一用户的点赞数有上限，超限会失败。"
+    )
+    chat_type: ChatType = ChatType.ALL
+    associated_types: list[str] = ["text"]
+
+    async def _feature_enabled(self, config: Any) -> bool:
+        return bool(getattr(getattr(config, "features", None), "enable_send_like", False))
+
+    async def execute(
+        self,
+        user_id: Annotated[str, "要点赞的目标 QQ 号"],
+    ) -> tuple[bool, str]:
+        # 从配置读取点赞数
+        times = 10
+        try:
+            from src.core.managers import get_plugin_manager
+
+            plugin = get_plugin_manager().get_plugin("snowluma_extension")
+            if plugin and plugin.config:
+                times = int(getattr(getattr(plugin.config, "features", None), "send_like_times", 10))
+        except Exception:
+            pass
+
+        params = {
+            "user_id": _coerce_int_if_digit(user_id),
+            "times": times,
+        }
+
+        ok, msg = await _call_snowluma_api(action_name="send_like", params=params)
+        if ok:
+            return True, f"已给用户 {user_id} 点赞 {times} 次。"
+        return False, msg
+
+
 __all__ = [
     "MuteGroupMemberAction",
     "UnmuteGroupMemberAction",
     "ReactToMessageAction",
+    "SendFaceAction",
     "PokeGroupMemberAction",
     "RecallMessageAction",
     "GroupSignAction",
@@ -733,4 +1002,10 @@ __all__ = [
     "SetGroupSpecialTitleAction",
     "SendGroupNoticeAction",
     "DeleteGroupNoticeAction",
+    "SendGroupForwardMsgAction",
+    "SetEssenceMsgAction",
+    "DeleteEssenceMsgAction",
+    "ForwardGroupSingleMsgAction",
+    "ForwardFriendSingleMsgAction",
+    "SendLikeAction",
 ]

@@ -224,4 +224,212 @@ class GetQQFaceListTool(BaseTool):
         return True, "\n".join(lines)
 
 
-__all__ = ["GetGroupMemberInfoTool", "GetGroupNoticeTool", "GetQQFaceListTool"]
+class GetEssenceMsgListTool(BaseTool):
+    """获取群精华消息列表。"""
+
+    tool_name: str = "get_essence_msg_list"
+    tool_description: str = (
+        "获取当前群聊的精华消息列表。"
+        "返回每条精华消息的消息ID、发送者QQ号、昵称、发送时间和消息内容。"
+    )
+    chat_type: ChatType = ChatType.GROUP
+    associated_platforms: list[str] = ["qq"]
+
+    async def execute(self) -> tuple[bool, str]:
+        """返回群精华消息列表。"""
+        group_id = _get_group_id_from_context_tool(self)
+        if not group_id:
+            return False, "该工具只能在群聊上下文使用：未获取到 group_id。"
+
+        params = {"group_id": _coerce_int_if_digit(group_id)}
+
+        adapter = adapter_api.get_adapter(_SNOWLUMA_ADAPTER_SIGNATURE)
+        if adapter is None:
+            return False, "snowluma_adapter 未启动。"
+        if not hasattr(adapter, "send_snowluma_api"):
+            return False, "snowluma_adapter 不支持 send_snowluma_api。"
+
+        try:
+            resp = await adapter.send_snowluma_api("get_essence_msg_list", params, timeout=30.0)  # type: ignore[attr-defined]
+        except Exception as exc:
+            logger.error(f"获取精华消息列表失败: {exc}")
+            return False, f"获取精华消息列表异常：{exc}"
+
+        data = resp.get("data") if isinstance(resp, dict) else None
+        if not data or not isinstance(data, dict):
+            return False, "获取精华消息列表失败：返回数据为空。"
+
+        msg_list = data.get("essence_list") or data.get("messages") or []
+        if not msg_list:
+            return True, "当前群没有精华消息。"
+
+        lines: list[str] = [f"群精华消息列表（共 {len(msg_list)} 条）："]
+        for i, msg in enumerate(msg_list, 1):
+            msg_id = msg.get("message_id", "")
+            sender_uid = msg.get("sender_id") or msg.get("user_id", "")
+            sender_nick = msg.get("sender_nick") or msg.get("nickname", "")
+            msg_time = msg.get("sender_time") or msg.get("time", "")
+            content = msg.get("content") or msg.get("raw_message", "")
+            if msg_time:
+                try:
+                    time_str = datetime.fromtimestamp(int(msg_time)).strftime("%Y-%m-%d %H:%M:%S")
+                except (ValueError, TypeError, OSError):
+                    time_str = str(msg_time)
+            else:
+                time_str = "未知时间"
+            lines.append(f"--- 精华 {i} ---")
+            lines.append(f"消息ID：{msg_id}")
+            lines.append(f"发送者：{sender_nick}({sender_uid})")
+            lines.append(f"时间：{time_str}")
+            lines.append(f"内容：{content}")
+            lines.append("")
+
+        logger.info(f"获取精华消息列表成功: count={len(msg_list)}")
+        return True, "\n".join(lines)
+
+
+class GetGroupHonorInfoTool(BaseTool):
+    """获取群荣誉信息。"""
+
+    tool_name: str = "get_group_honor_info"
+    tool_description: str = (
+        "获取当前群聊的荣誉信息，包括龙王、群聊之火、群聊炽焰等。"
+        "龙王是当日发言最多的人；群聊之火是连续发消息的人；群聊炽焰是长期连续发消息的人。"
+    )
+    chat_type: ChatType = ChatType.GROUP
+    associated_platforms: list[str] = ["qq"]
+
+    async def execute(self) -> tuple[bool, str]:
+        """返回群荣誉信息。"""
+        group_id = _get_group_id_from_context_tool(self)
+        if not group_id:
+            return False, "该工具只能在群聊上下文使用：未获取到 group_id。"
+
+        params = {
+            "group_id": _coerce_int_if_digit(group_id),
+            "type": "all",
+        }
+
+        adapter = adapter_api.get_adapter(_SNOWLUMA_ADAPTER_SIGNATURE)
+        if adapter is None:
+            return False, "snowluma_adapter 未启动。"
+        if not hasattr(adapter, "send_snowluma_api"):
+            return False, "snowluma_adapter 不支持 send_snowluma_api。"
+
+        try:
+            resp = await adapter.send_snowluma_api("get_group_honor_info", params, timeout=30.0)  # type: ignore[attr-defined]
+        except Exception as exc:
+            logger.error(f"获取群荣誉信息失败: {exc}")
+            return False, f"获取群荣誉信息异常：{exc}"
+
+        data = resp.get("data") if isinstance(resp, dict) else None
+        if not data or not isinstance(data, dict):
+            return False, "获取群荣誉信息失败：返回数据为空。"
+
+        lines: list[str] = []
+
+        current_talkative = data.get("current_talkative")
+        if current_talkative:
+            lines.append("=== 当前龙王 ===")
+            lines.append(f"{current_talkative.get('nickname', '')}({current_talkative.get('user_id', '')})：{current_talkative.get('description', '')}")
+            lines.append("")
+
+        talkative_list = data.get("talkative_list") or []
+        if talkative_list:
+            lines.append(f"=== 历史龙王（共 {len(talkative_list)} 位）===")
+            for i, item in enumerate(talkative_list[:10], 1):
+                lines.append(f"{i}. {item.get('nickname', '')}({item.get('user_id', '')})：{item.get('description', '')}")
+            if len(talkative_list) > 10:
+                lines.append(f"... 还有 {len(talkative_list) - 10} 位")
+            lines.append("")
+
+        performer_list = data.get("performer_list") or []
+        if performer_list:
+            lines.append(f"=== 群聊之火（连续发消息，共 {len(performer_list)} 位）===")
+            for i, item in enumerate(performer_list[:10], 1):
+                lines.append(f"{i}. {item.get('nickname', '')}({item.get('user_id', '')})：{item.get('description', '')}")
+            if len(performer_list) > 10:
+                lines.append(f"... 还有 {len(performer_list) - 10} 位")
+            lines.append("")
+
+        legend_list = data.get("legend_list") or []
+        if legend_list:
+            lines.append(f"=== 群聊炽焰（长期连续发消息，共 {len(legend_list)} 位）===")
+            for i, item in enumerate(legend_list[:10], 1):
+                lines.append(f"{i}. {item.get('nickname', '')}({item.get('user_id', '')})：{item.get('description', '')}")
+            if len(legend_list) > 10:
+                lines.append(f"... 还有 {len(legend_list) - 10} 位")
+            lines.append("")
+
+        if not lines:
+            return True, "当前群没有任何荣誉信息。"
+
+        logger.info(f"获取群荣誉信息成功: talkative={len(talkative_list)}, performer={len(performer_list)}, legend={len(legend_list)}")
+        return True, "\n".join(lines)
+
+
+class GetGroupShutListTool(BaseTool):
+    """获取群禁言列表。"""
+
+    tool_name: str = "get_group_shut_list"
+    tool_description: str = (
+        "获取当前群聊中仍在禁言中的成员列表。"
+        "返回每个被禁言成员的 QQ 号、昵称和禁言到期时间。"
+    )
+    chat_type: ChatType = ChatType.GROUP
+    associated_platforms: list[str] = ["qq"]
+
+    async def execute(self) -> tuple[bool, str]:
+        """返回群禁言列表。"""
+        group_id = _get_group_id_from_context_tool(self)
+        if not group_id:
+            return False, "该工具只能在群聊上下文使用：未获取到 group_id。"
+
+        params = {"group_id": _coerce_int_if_digit(group_id)}
+
+        adapter = adapter_api.get_adapter(_SNOWLUMA_ADAPTER_SIGNATURE)
+        if adapter is None:
+            return False, "snowluma_adapter 未启动。"
+        if not hasattr(adapter, "send_snowluma_api"):
+            return False, "snowluma_adapter 不支持 send_snowluma_api。"
+
+        try:
+            resp = await adapter.send_snowluma_api("get_group_shut_list", params, timeout=30.0)  # type: ignore[attr-defined]
+        except Exception as exc:
+            logger.error(f"获取群禁言列表失败: {exc}")
+            return False, f"获取群禁言列表异常：{exc}"
+
+        data = resp.get("data") if isinstance(resp, dict) else None
+        if not data:
+            return True, "当前群没有禁言中的成员。"
+
+        shut_list = data if isinstance(data, list) else data.get("list") or data.get("members") or []
+        if not shut_list:
+            return True, "当前群没有禁言中的成员。"
+
+        lines: list[str] = [f"群禁言列表（共 {len(shut_list)} 人）："]
+        for i, item in enumerate(shut_list, 1):
+            uid = item.get("user_id", "")
+            nick = item.get("nickname", "")
+            shut_time = item.get("shut_up_time", 0)
+            if shut_time:
+                try:
+                    time_str = datetime.fromtimestamp(int(shut_time)).strftime("%Y-%m-%d %H:%M:%S")
+                except (ValueError, TypeError, OSError):
+                    time_str = str(shut_time)
+            else:
+                time_str = "未知"
+            lines.append(f"{i}. {nick}({uid}) - 解禁时间：{time_str}")
+
+        logger.info(f"获取群禁言列表成功: count={len(shut_list)}")
+        return True, "\n".join(lines)
+
+
+__all__ = [
+    "GetGroupMemberInfoTool",
+    "GetGroupNoticeTool",
+    "GetQQFaceListTool",
+    "GetEssenceMsgListTool",
+    "GetGroupHonorInfoTool",
+    "GetGroupShutListTool",
+]

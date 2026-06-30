@@ -28,10 +28,6 @@ class SnowLumaExtensionConfig(BaseConfig):
             default=True,
             description="是否启用 snowluma_extension 插件（关闭则所有 Action 不激活）",
         )
-        config_version: str = Field(
-            default="1.0.0",
-            description="配置版本号",
-        )
         error_hint: str = Field(
             default="操作失败时，请如实告知用户失败原因，不要假装操作成功。如果提示权限不足，说明你不是群主或管理员。",
             description="操作失败时附加给 LLM 的提示词，指导 bot 如何向用户反馈错误",
@@ -42,8 +38,7 @@ class SnowLumaExtensionConfig(BaseConfig):
         """功能开关（默认全部关闭）。"""
 
         # --- 群管理 Action ---
-        enable_mute: bool = Field(default=False, description="是否启用：群成员禁言")
-        enable_unmute: bool = Field(default=False, description="是否启用：群成员解除禁言")
+        enable_mute: bool = Field(default=False, description="是否启用：群成员禁言/解禁/查看禁言列表")
         enable_react: bool = Field(default=True, description="是否启用：QQ 表情相关功能（贴表情回应、发表情、查询表情表）")
         enable_poke: bool = Field(default=True, description="是否启用：戳一戳群成员")
         enable_recall: bool = Field(default=False, description="是否启用：撤回指定消息")
@@ -60,6 +55,12 @@ class SnowLumaExtensionConfig(BaseConfig):
         enable_send_group_notice: bool = Field(default=False, description="是否启用：发送群公告")
         enable_delete_group_notice: bool = Field(default=False, description="是否启用：删除群公告")
         enable_get_group_notice: bool = Field(default=False, description="是否启用：获取群公告列表")
+        enable_send_forward_msg: bool = Field(default=False, description="是否启用：发送群合并转发消息")
+        enable_essence_msg: bool = Field(default=False, description="是否启用：设置/移除精华消息")
+        enable_get_essence_msg: bool = Field(default=True, description="是否启用：获取群精华消息列表")
+        enable_get_group_honor: bool = Field(default=True, description="是否启用：获取群荣誉信息")
+        enable_send_like: bool = Field(default=True, description="是否启用：给他人主页点赞")
+        send_like_times: int = Field(default=10, description="每次点赞的数量（非 SVIP 上限 10，SVIP 上限 20）")
 
     @config_section("scheduled_sign")
     class ScheduledSignSection(SectionBase):
@@ -82,11 +83,11 @@ class SnowLumaExtensionConfig(BaseConfig):
             description="每天打卡的时间点（24小时制 HH:MM 格式，如 08:00）",
         )
         jitter_min_seconds: int = Field(
-            default=10,
+            default=1,
             description="群与群之间打卡的最小随机抖动（秒）",
         )
         jitter_max_seconds: int = Field(
-            default=120,
+            default=2,
             description="群与群之间打卡的最大随机抖动（秒）",
         )
 
