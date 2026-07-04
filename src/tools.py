@@ -204,7 +204,15 @@ class GetQQFaceListTool(BaseTool):
     tool_description: str = (
         "查询 QQ 可用表情列表，返回所有表情的 ID 和名称映射。"
         "在调用 react_to_message 贴表情之前，先用本工具查询可用的表情，"
-        "然后选择合适的表情 ID 传给 react_to_message。"
+        "然后选择合适的表情名称传给 react_to_message。"
+        "\n\n此外，你也可以在回复文本中直接插入表情标记来发送 QQ 原生表情："
+        "在文本任意位置写 [表情：名称]（注意是中文冒号），系统会自动转换为真实表情发送。"
+        "例如：\"谢谢啦 [表情：拜谢]\"、\"好开心 [表情：笑哭]\"。"
+        "支持同一条消息插入多个标记。"
+        "\n\n重要规则："
+        "1. 必须使用本工具返回的表情名称，严禁自行编造、猜测或修改表情名称。"
+        "2. 名称必须与列表中完全一致（包括标点符号），找不到完全匹配的就不要用。"
+        "3. 优先使用 [表情：名称] 格式，不要使用 [face:ID] 格式。"
     )
     associated_platforms: list[str] = ["qq"]
 
@@ -212,14 +220,20 @@ class GetQQFaceListTool(BaseTool):
         """返回完整的 QQ 表情映射表。"""
         from plugins.snowluma_adapter.src.event_models import QQ_FACE
 
-        lines: list[str] = ["QQ 表情列表（emoji_id: 表情名称）：", ""]
+        lines: list[str] = ["QQ 表情列表（名称 → ID）：", ""]
         for face_id, face_name in QQ_FACE.items():
             # face_name 格式: "[表情：赞]"，提取中间名称
-            display_name = face_name
-            lines.append(f"  {face_id}: {display_name}")
+            if face_name.startswith("[表情：") and face_name.endswith("]"):
+                display_name = face_name[4:-1]
+            else:
+                display_name = face_name
+            lines.append(f"  {display_name} → {face_id}")
 
         lines.append("")
-        lines.append("提示：调用 react_to_message 时优先使用表情 ID（数字）。")
+        lines.append("使用说明：")
+        lines.append("1. 在文本中插入表情：写 [表情：名称]（中文冒号），如 [表情：拜谢]")
+        lines.append("2. 调用 react_to_message 时 emoji_id 传表情名称，如 '拜谢'、'笑哭'")
+        lines.append("3. 只能使用上面列出的名称，严禁自行编造或猜测")
 
         return True, "\n".join(lines)
 

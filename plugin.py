@@ -30,7 +30,6 @@ from .src.actions import (
     PokeGroupMemberAction,
     ReactToMessageAction,
     RecallMessageAction,
-    SendFaceAction,
     SendGroupForwardMsgAction,
     SendGroupNoticeAction,
     SendLikeAction,
@@ -40,6 +39,7 @@ from .src.actions import (
     SetGroupSpecialTitleAction,
     UnmuteGroupMemberAction,
 )
+from .src.face_intercept_handler import FaceInterceptHandler
 from .src.tools import (
     GetEssenceMsgListTool,
     GetGroupHonorInfoTool,
@@ -71,7 +71,6 @@ class SnowLumaExtensionPlugin(BasePlugin):
             MuteGroupMemberAction,
             UnmuteGroupMemberAction,
             ReactToMessageAction,
-            SendFaceAction,
             PokeGroupMemberAction,
             RecallMessageAction,
             GroupSignAction,
@@ -87,6 +86,8 @@ class SnowLumaExtensionPlugin(BasePlugin):
             ForwardGroupSingleMsgAction,
             ForwardFriendSingleMsgAction,
             SendLikeAction,
+            # 事件拦截器
+            FaceInterceptHandler,
         ]
 
         # Tool 组件按需注册

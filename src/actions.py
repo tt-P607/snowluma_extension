@@ -274,11 +274,11 @@ class ReactToMessageAction(_SnowLumaBaseAction):
     action_name: str = "react_to_message"
     action_description: str = (
         "对一条或多条消息添加表情回应（贴表情）。支持批量操作。"
-        "传入 reactions 参数：一个 JSON 数组，每项格式为 {\"message_id\": \"消息ID\", \"emoji_id\": \"表情ID或名称\"}。"
+        "传入 reactions 参数：一个 JSON 数组，每项格式为 {\"message_id\": \"消息ID\", \"emoji_id\": \"表情名称\"}。"
         "可以对同一条消息贴多个表情，也可以对不同消息分别贴表情。"
         "使用前请先调用 get_qq_face_list 工具查询可用的表情列表。"
-        "emoji_id 优先使用数字 ID（如 '76'），也可以使用表情名称（如 '赞'、'爱心'、'笑哭'）。"
-        "示例：[{\"message_id\": \"12345\", \"emoji_id\": \"76\"}, {\"message_id\": \"12345\", \"emoji_id\": \"66\"}]"
+        "emoji_id 必须使用表情名称（如 '赞'、'爱心'、'笑哭'），且必须与列表中完全一致，严禁自行编造。"
+        "示例：[{\"message_id\": \"12345\", \"emoji_id\": \"赞\"}, {\"message_id\": \"12345\", \"emoji_id\": \"笑哭\"}]"
     )
     chat_type: ChatType = ChatType.GROUP
 
@@ -366,74 +366,6 @@ class ReactToMessageAction(_SnowLumaBaseAction):
             f"表情回应完成：成功 {success_count}/{len(tasks)}，失败 {fail_count}。"
             f"\n失败详情：{'；'.join(fail_details[:5])}"
         )
-
-
-class SendFaceAction(_SnowLumaBaseAction):
-    """发送 QQ 原生表情。"""
-
-    action_name: str = "send_face"
-    action_description: str = (
-        "发送一个 QQ 原生表情到当前聊天中。"
-        "使用前请先调用 get_qq_face_list 工具查询可用的表情列表，从中选择合适的表情。"
-        "优先使用表情 ID（数字字符串）作为参数，也可以使用表情名称（如'赞'、'爱心'、'笑哭'）。"
-        "可以单独发送表情，也可以和文字消息一起发送。"
-    )
-    chat_type: ChatType = ChatType.ALL
-
-    async def _feature_enabled(self, config: Any) -> bool:
-        return bool(getattr(getattr(config, "features", None), "enable_react", False))
-
-    async def execute(
-        self,
-        face_id: Annotated[str, "表情 ID（数字，如 '76'）或表情名称（如 '赞'）。优先使用 ID"],
-        text: Annotated[str, "可选，附带的文字消息。留空则只发表情"] = "",
-    ) -> tuple[bool, str]:
-        from src.core.models.message import Message, MessageType
-
-        # 解析表情名称为 ID
-        raw_face = str(face_id).strip()
-        resolved_face_id = raw_face
-
-        if not raw_face.isdigit():
-            from plugins.snowluma_adapter.src.event_models import QQ_FACE
-
-            search_key = raw_face
-            if not search_key.startswith("[表情："):
-                search_key = f"[表情：{search_key}]"
-
-            found_id = None
-            for fid, fname in QQ_FACE.items():
-                if fname == search_key or search_key in fname:
-                    found_id = fid
-                    break
-
-            if found_id:
-                resolved_face_id = found_id
-            else:
-                return False, f"无法识别的表情：{raw_face}。请使用 get_qq_face_list 工具查询可用的表情 ID。"
-
-        # 构建 Message，通过 extra["media"] 携带 face 消息段
-        media_list: list[dict[str, Any]] = [{"type": "face", "data": resolved_face_id}]
-
-        message = Message(
-            content=text,
-            processed_plain_text=text or None,
-            message_type=MessageType.TEXT,
-            platform=self.chat_stream.platform,
-            chat_type=self.chat_stream.chat_type,
-            stream_id=self.chat_stream.stream_id,
-            media=media_list,
-        )
-
-        ok = await self._send_to_stream(message)
-        if ok:
-            from plugins.snowluma_adapter.src.event_models import QQ_FACE
-
-            face_name = QQ_FACE.get(resolved_face_id, f"表情{resolved_face_id}")
-            if text:
-                return True, f"已发送表情 {face_name}（id={resolved_face_id}）和文字：{text}"
-            return True, f"已发送表情 {face_name}（id={resolved_face_id}）。"
-        return False, "发送表情失败。"
 
 
 class PokeGroupMemberAction(_SnowLumaBaseAction):
@@ -992,7 +924,6 @@ __all__ = [
     "MuteGroupMemberAction",
     "UnmuteGroupMemberAction",
     "ReactToMessageAction",
-    "SendFaceAction",
     "PokeGroupMemberAction",
     "RecallMessageAction",
     "GroupSignAction",
