@@ -274,11 +274,11 @@ class ReactToMessageAction(_SnowLumaBaseAction):
     action_name: str = "react_to_message"
     action_description: str = (
         "对一条或多条消息添加表情回应（贴表情）。支持批量操作。"
-        "传入 reactions 参数：一个 JSON 数组，每项格式为 {\"message_id\": \"消息ID\", \"emoji_id\": \"表情名称\"}。"
+        "传入 reactions 参数：一个 JSON 数组，每项格式为 {\"message_id\": \"消息ID\", \"emoji_id\": \"表情ID\"}。"
         "可以对同一条消息贴多个表情，也可以对不同消息分别贴表情。"
         "使用前请先调用 get_qq_face_list 工具查询可用的表情列表。"
-        "emoji_id 必须使用表情名称（如 '赞'、'爱心'、'笑哭'），且必须与列表中完全一致，严禁自行编造。"
-        "示例：[{\"message_id\": \"12345\", \"emoji_id\": \"赞\"}, {\"message_id\": \"12345\", \"emoji_id\": \"笑哭\"}]"
+        "emoji_id 必须使用表情 ID（数字，如 '76'、'66'），且必须来自 get_qq_face_list 返回的列表，严禁自行编造。"
+        "示例：[{\"message_id\": \"12345\", \"emoji_id\": \"76\"}, {\"message_id\": \"12345\", \"emoji_id\": \"66\"}]"
     )
     chat_type: ChatType = ChatType.GROUP
 

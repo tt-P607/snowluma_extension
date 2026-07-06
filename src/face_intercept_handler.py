@@ -20,10 +20,12 @@ from src.kernel.event import EventDecision
 
 logger = get_logger("snowluma_extension")
 
-# 匹配 [face:数字ID] 格式
-_FACE_ID_PATTERN = re.compile(r"\[face:(\d+)\]")
-# 匹配 [表情：名称] 格式
-_FACE_NAME_PATTERN = re.compile(r"\[表情：([^\]]+)\]")
+# 匹配 【face:数字ID】 格式（中文方括号，推荐格式，不会被 Rich 吞掉）
+_FACE_ID_PATTERN = re.compile(r"【face:(\d+)】")
+# 兼容旧格式 [face:数字ID]（英文方括号，会被 Rich markup 吞掉，不推荐）
+_FACE_ID_PATTERN_LEGACY = re.compile(r"\[face:(\d+)\]")
+# 匹配 【表情：名称】 或 [表情：名称] 格式
+_FACE_NAME_PATTERN = re.compile(r"[【\[]表情：([^\]】]+)[】\]]")
 
 # 反向映射：表情名称 → ID（懒加载）
 _FACE_NAME_TO_ID: dict[str, str] | None = None
@@ -73,8 +75,11 @@ def _process_text_segment(text: str) -> list[dict[str, Any]]:
     Returns:
         list[dict]: 处理后的段列表，可能包含 text 和 face 段
     """
-    # 合并两种 pattern 为统一的匹配
-    combined = re.compile(r"\[face:(\d+)\]|\[表情：([^\]]+)\]")
+    # 合并三种 pattern 为统一的匹配：
+    # 1. 【face:ID】（中文方括号，推荐）
+    # 2. [face:ID]（英文方括号，兼容旧格式）
+    # 3. 【表情：名称】或[表情：名称]
+    combined = re.compile(r"【face:(\d+)】|\[face:(\d+)\]|[【\[]表情：([^\]】]+)[】\]]")
 
     result: list[dict[str, Any]] = []
     last_end = 0
@@ -89,11 +94,14 @@ def _process_text_segment(text: str) -> list[dict[str, Any]]:
         # 提取 face ID
         face_id = None
         if match.group(1) is not None:
-            # [face:ID] 格式
+            # 【face:ID】 格式（推荐）
             face_id = match.group(1)
         elif match.group(2) is not None:
-            # [表情：名称] 格式
-            name = match.group(2).strip()
+            # [face:ID] 格式（兼容旧格式）
+            face_id = match.group(2)
+        elif match.group(3) is not None:
+            # 【表情：名称】或[表情：名称] 格式
+            name = match.group(3).strip()
             face_id = _resolve_face_name(name)
             if face_id is None:
                 # 无法识别的名称，保留原始文本
@@ -187,8 +195,8 @@ class FaceInterceptHandler(BaseEventHandler):
                 new_segments.append(seg)
                 continue
 
-            # 检查是否包含表情标记
-            if "[face:" not in text_data and "[表情：" not in text_data:
+            # 检查是否包含表情标记（支持中文方括号和英文方括号两种格式）
+            if "【face:" not in text_data and "[face:" not in text_data and "表情：" not in text_data:
                 new_segments.append(seg)
                 continue
 
