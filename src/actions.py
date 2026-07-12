@@ -920,6 +920,93 @@ class SendLikeAction(_SnowLumaBaseAction):
         return False, msg
 
 
+class SendShareCardAction(_SnowLumaBaseAction):
+    """发送推荐名片/群名片分享。"""
+
+    action_name: str = "send_share_card"
+    action_description: str = (
+        "在当前会话中发送名片分享（群名片或个人名片）。\n"
+        "- 分享群名片：传入 group_id（目标群号）\n"
+        "- 分享个人名片：传入 user_id（目标 QQ 号）\n"
+        "二者只能传一个；同时传入时以 group_id 为准。"
+    )
+    chat_type: ChatType = ChatType.ALL
+
+    async def _feature_enabled(self, config: Any) -> bool:
+        return bool(getattr(getattr(config, "features", None), "enable_send_share_card", True))
+
+    async def execute(
+        self,
+        user_id: Annotated[str, "要分享的个人名片 QQ 号（与 group_id 二选一）"] = "",
+        group_id: Annotated[str, "要分享的群名片群号（与 user_id 二选一）"] = "",
+    ) -> tuple[bool, str]:
+        # 目标会话（发送到哪个群/私聊）
+        target_group_id = _get_group_id_from_context(self)
+
+        uid = str(user_id).strip() if user_id else ""
+        gid = str(group_id).strip() if group_id else ""
+
+        if not uid and not gid:
+            return False, "必须提供 user_id（个人名片）或 group_id（群名片）中的至少一个。"
+
+        # 二者都传时以 group_id 为准
+        if gid:
+            share_params: dict[str, Any] = {"group_id": _coerce_int_if_digit(gid)}
+            card_kind = "群"
+        else:
+            share_params = {"user_id": _coerce_int_if_digit(uid)}
+            card_kind = "个人"
+
+        # 第一步：调用 send_ark_share 获取 Ark 卡片 JSON
+        adapter = adapter_api.get_adapter(_SNOWLUMA_ADAPTER_SIGNATURE)
+        if adapter is None:
+            return False, "snowluma_adapter 未启动，无法发送名片。"
+        try:
+            resp = await adapter.send_snowluma_api("send_ark_share", share_params, timeout=30.0)  # type: ignore[attr-defined]
+        except Exception as exc:
+            return False, f"获取{card_kind}名片 Ark 卡片异常：{exc}"
+
+        status = str(resp.get("status") or "").strip().lower()
+        retcode = resp.get("retcode")
+        if status != "ok" or (retcode not in (0, None)):
+            return False, _format_snowluma_failure("send_ark_share", resp, _get_error_hint())
+
+        data = resp.get("data") or {}
+        ark_msg_str = data.get("arkMsg", "")
+        if not ark_msg_str:
+            return False, f"{card_kind}名片 Ark 卡片内容为空。"
+
+        # 第二步：将 Ark JSON 作为 json 消息段发送到当前会话
+        # SnowLuma 的 json 段格式：{"type": "json", "data": {"data": "<ark_json_string>"}}
+        send_params: dict[str, Any] = {
+            "message": [{"type": "json", "data": {"data": ark_msg_str}}],
+        }
+        if target_group_id:
+            send_params["message_type"] = "group"
+            send_params["group_id"] = _coerce_int_if_digit(target_group_id)
+        else:
+            # 私聊场景：从上下文取 user_id
+            context = self.chat_stream.context
+            target_user_id = None
+            cur = context.current_message
+            if cur is not None:
+                target_user_id = cur.extra.get("user_id") or cur.extra.get("target_user_id")
+            if not target_user_id:
+                for m in reversed(context.unread_messages or []):
+                    target_user_id = m.extra.get("user_id") or m.extra.get("target_user_id")
+                    if target_user_id:
+                        break
+            if not target_user_id:
+                return False, "无法确定发送目标：当前不在群聊上下文，也无法获取私聊 user_id。"
+            send_params["message_type"] = "private"
+            send_params["user_id"] = _coerce_int_if_digit(target_user_id)
+
+        ok2, msg2 = await _call_snowluma_api(action_name="send_msg", params=send_params)
+        if ok2:
+            return True, f"已发送{card_kind}名片分享。"
+        return False, msg2
+
+
 __all__ = [
     "MuteGroupMemberAction",
     "UnmuteGroupMemberAction",
@@ -939,4 +1026,5 @@ __all__ = [
     "ForwardGroupSingleMsgAction",
     "ForwardFriendSingleMsgAction",
     "SendLikeAction",
+    "SendShareCardAction",
 ]

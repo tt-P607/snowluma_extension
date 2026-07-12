@@ -61,6 +61,7 @@ class SnowLumaExtensionConfig(BaseConfig):
         enable_get_group_honor: bool = Field(default=True, description="是否启用：获取群荣誉信息")
         enable_send_like: bool = Field(default=True, description="是否启用：给他人主页点赞")
         send_like_times: int = Field(default=10, description="每次点赞的数量（非 SVIP 上限 10，SVIP 上限 20）")
+        enable_send_share_card: bool = Field(default=True, description="是否启用：发送群名片/个人名片分享")
 
     @config_section("scheduled_sign")
     class ScheduledSignSection(SectionBase):

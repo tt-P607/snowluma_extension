@@ -33,6 +33,7 @@ from .src.actions import (
     SendGroupForwardMsgAction,
     SendGroupNoticeAction,
     SendLikeAction,
+    SendShareCardAction,
     SetEssenceMsgAction,
     SetGroupCardAction,
     SetGroupNameAction,
@@ -86,6 +87,7 @@ class SnowLumaExtensionPlugin(BasePlugin):
             ForwardGroupSingleMsgAction,
             ForwardFriendSingleMsgAction,
             SendLikeAction,
+            SendShareCardAction,
             # 事件拦截器
             FaceInterceptHandler,
         ]

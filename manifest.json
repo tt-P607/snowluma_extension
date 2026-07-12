@@ -1,7 +1,7 @@
 {
     "name": "snowluma_extension",
     "display_name": "SnowLuma 扩展能力",
-    "version": "1.0.3",
+    "version": "1.0.4",
     "description": "提供 SnowLuma 的群管理、消息操作、表情回应等高级操作能力",
     "author": "言柒",
     "license": "MIT",
@@ -25,6 +25,7 @@
         {"component_type": "action", "component_name": "react_to_message", "dependencies": ["snowluma_adapter:adapter:snowluma_adapter"]},
         {"component_type": "action", "component_name": "poke_group_member", "dependencies": ["snowluma_adapter:adapter:snowluma_adapter"]},
         {"component_type": "action", "component_name": "recall_message", "dependencies": ["snowluma_adapter:adapter:snowluma_adapter"]},
+        {"component_type": "action", "component_name": "send_share_card", "dependencies": ["snowluma_adapter:adapter:snowluma_adapter"]},
         {"component_type": "action", "component_name": "group_sign", "dependencies": ["snowluma_adapter:adapter:snowluma_adapter"]},
         {"component_type": "action", "component_name": "kick_group_member", "dependencies": ["snowluma_adapter:adapter:snowluma_adapter"]},
         {"component_type": "action", "component_name": "set_group_name", "dependencies": ["snowluma_adapter:adapter:snowluma_adapter"]},
