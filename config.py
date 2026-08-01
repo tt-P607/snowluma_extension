@@ -17,8 +17,8 @@ from src.core.components.base.config import BaseConfig, Field, SectionBase, conf
 class SnowLumaExtensionConfig(BaseConfig):
     """snowluma_extension 插件配置。"""
 
-    config_name: ClassVar[str] = "config"
-    config_description: ClassVar[str] = "SnowLuma 扩展能力与通知收集插件配置"
+    name: ClassVar[str] = "config"
+    description: ClassVar[str] = "SnowLuma 扩展能力与通知收集插件配置"
 
     @config_section("plugin")
     class PluginSection(SectionBase):
@@ -39,13 +39,14 @@ class SnowLumaExtensionConfig(BaseConfig):
 
         # --- 群管理 Action ---
         enable_mute: bool = Field(default=False, description="是否启用：群成员禁言/解禁/查看禁言列表")
+        enable_set_group_whole_ban: bool = Field(default=False, description="是否启用：全群禁言开关")
         enable_react: bool = Field(default=True, description="是否启用：QQ 表情相关功能（贴表情回应、发表情、查询表情表）")
         enable_poke: bool = Field(default=True, description="是否启用：戳一戳群成员")
         enable_recall: bool = Field(default=False, description="是否启用：撤回指定消息")
         enable_group_sign: bool = Field(default=True, description="是否启用：群打卡")
         enable_kick: bool = Field(default=False, description="是否启用：踢出群成员")
 
-        # --- 新增群管理权限 ---
+        # --- 群管理权限 ---
         enable_set_group_name: bool = Field(default=False, description="是否启用：修改群名")
         enable_set_group_card: bool = Field(default=False, description="是否启用：修改群名片")
         enable_set_group_special_title: bool = Field(default=False, description="是否启用：修改群头衔")

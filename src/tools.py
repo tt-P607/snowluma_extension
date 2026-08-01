@@ -22,8 +22,8 @@ logger = get_logger("snowluma_extension")
 class GetGroupMemberInfoTool(BaseTool):
     """获取群成员信息。"""
 
-    tool_name: str = "get_group_member_info"
-    tool_description: str = (
+    name: str = "get_group_member_info"
+    description: str = (
         "获取当前群聊中指定成员的详细信息。"
         "返回的信息包括：QQ号、昵称、群名片（群昵称）、角色身份（群主owner/管理员admin/普通成员member）、"
         "专属头衔、群等级、性别、年龄、入群时间、最后发言时间。"
@@ -124,10 +124,11 @@ def _get_group_id_from_context_tool(tool: BaseTool) -> Any:
 class GetGroupNoticeTool(BaseTool):
     """获取群公告列表。"""
 
-    tool_name: str = "get_group_notice"
-    tool_description: str = (
+    name: str = "get_group_notice"
+    description: str = (
         "获取当前群聊的所有群公告列表，包括每条公告的完整正文内容、发布者QQ、"
-        "发布时间、阅读数、是否含图片和公告ID（notice_id）。"
+        "发布时间、阅读数、是否含图片、公告ID（notice_id）、是否置顶、公告类型和是否需要回执确认。"
+        "公告类型：0=普通公告,1=弹窗推送,2=新成员推送,3=改名引导。"
         "获取群公告不需要特殊权限，但发送和删除群公告需要你为群主或管理员。"
         "返回的 notice_id 可用于删除群公告。"
     )
@@ -172,6 +173,8 @@ class GetGroupNoticeTool(BaseTool):
 
         from datetime import datetime
 
+        type_names = {0: "普通公告", 1: "弹窗推送", 2: "新成员推送", 3: "改名引导"}
+
         lines: list[str] = []
         for i, notice in enumerate(notices, 1):
             notice_id = notice.get("notice_id", "")
@@ -180,6 +183,9 @@ class GetGroupNoticeTool(BaseTool):
             text = notice.get("message", {}).get("text", "")
             read_num = notice.get("read_num", 0)
             has_image = bool(notice.get("message", {}).get("image"))
+            is_pinned = notice.get("pinned", False)
+            notice_type = notice.get("type", 0)
+            need_confirm = notice.get("confirm_required", False)
 
             time_str = datetime.fromtimestamp(publish_time).strftime("%Y-%m-%d %H:%M") if publish_time else "未知"
 
@@ -188,6 +194,12 @@ class GetGroupNoticeTool(BaseTool):
             lines.append(f"发布者：{sender_id}")
             lines.append(f"发布时间：{time_str}")
             lines.append(f"阅读数：{read_num}")
+            if is_pinned:
+                lines.append("置顶：是")
+            if notice_type and notice_type != 0:
+                lines.append(f"类型：{type_names.get(notice_type, str(notice_type))}")
+            if need_confirm:
+                lines.append("需回执确认：是")
             if has_image:
                 lines.append("含图片：是")
             lines.append(f"正文：{text}")
@@ -200,8 +212,8 @@ class GetGroupNoticeTool(BaseTool):
 class GetQQFaceListTool(BaseTool):
     """查询 QQ 表情列表。"""
 
-    tool_name: str = "get_qq_face_list"
-    tool_description: str = (
+    name: str = "get_qq_face_list"
+    description: str = (
         "查询 QQ 可用表情列表，返回所有表情的 ID 和名称映射。"
         "在调用 react_to_message 贴表情之前，先用本工具查询可用的表情，"
         "然后选择合适的表情 ID 传给 react_to_message。"
@@ -241,8 +253,8 @@ class GetQQFaceListTool(BaseTool):
 class GetEssenceMsgListTool(BaseTool):
     """获取群精华消息列表。"""
 
-    tool_name: str = "get_essence_msg_list"
-    tool_description: str = (
+    name: str = "get_essence_msg_list"
+    description: str = (
         "获取当前群聊的精华消息列表。"
         "返回每条精华消息的消息ID、发送者QQ号、昵称、发送时间和消息内容。"
     )
@@ -305,8 +317,8 @@ class GetEssenceMsgListTool(BaseTool):
 class GetGroupHonorInfoTool(BaseTool):
     """获取群荣誉信息。"""
 
-    tool_name: str = "get_group_honor_info"
-    tool_description: str = (
+    name: str = "get_group_honor_info"
+    description: str = (
         "获取当前群聊的荣誉信息，包括龙王、群聊之火、群聊炽焰等。"
         "龙王是当日发言最多的人；群聊之火是连续发消息的人；群聊炽焰是长期连续发消息的人。"
     )
@@ -385,8 +397,8 @@ class GetGroupHonorInfoTool(BaseTool):
 class GetGroupShutListTool(BaseTool):
     """获取群禁言列表。"""
 
-    tool_name: str = "get_group_shut_list"
-    tool_description: str = (
+    name: str = "get_group_shut_list"
+    description: str = (
         "获取当前群聊中仍在禁言中的成员列表。"
         "返回每个被禁言成员的 QQ 号、昵称和禁言到期时间。"
     )
@@ -439,6 +451,164 @@ class GetGroupShutListTool(BaseTool):
         return True, "\n".join(lines)
 
 
+class GetGroupInfoTool(BaseTool):
+    """获取群信息。"""
+
+    name: str = "get_group_info"
+    description: str = (
+        "获取当前群聊的基本信息，包括群名、群号、当前成员数、成员上限、建群时间、群等级和群简介。"
+        "常用于：了解群的整体概况、查看群人数和上限、获取群名等。"
+    )
+    chat_type: ChatType = ChatType.GROUP
+    associated_platforms: list[str] = ["qq"]
+
+    async def execute(
+        self,
+        no_cache: Annotated[bool, "是否不使用缓存（true=强制从服务器获取最新数据）"] = False,
+    ) -> tuple[bool, str]:
+        """返回群基本信息。"""
+        group_id = _get_group_id_from_context_tool(self)
+        if not group_id:
+            return False, "该工具只能在群聊上下文使用：未获取到 group_id。"
+
+        params = {
+            "group_id": _coerce_int_if_digit(group_id),
+            "no_cache": bool(no_cache),
+        }
+
+        adapter = adapter_api.get_adapter(_SNOWLUMA_ADAPTER_SIGNATURE)
+        if adapter is None:
+            return False, "snowluma_adapter 未启动。"
+        if not hasattr(adapter, "send_snowluma_api"):
+            return False, "snowluma_adapter 不支持 send_snowluma_api。"
+
+        try:
+            resp = await adapter.send_snowluma_api("get_group_info", params, timeout=30.0)  # type: ignore[attr-defined]
+        except Exception as exc:
+            logger.error(f"获取群信息失败: {exc}")
+            return False, f"获取群信息异常：{exc}"
+
+        status = str(resp.get("status") or "").strip().lower()
+        retcode = resp.get("retcode")
+        if status != "ok" or (retcode != 0 and retcode is not None):
+            return False, _format_snowluma_failure("get_group_info", resp, _get_error_hint())
+
+        data = resp.get("data") or {}
+
+        group_name = data.get("group_name", "未知")
+        member_count = data.get("member_count", 0)
+        max_member_count = data.get("max_member_count", 0)
+        group_create_time = data.get("group_create_time", 0)
+        group_level = data.get("group_level", 0)
+        group_memo = data.get("group_memo", "")
+
+        lines: list[str] = [
+            f"群号：{group_id}",
+            f"群名：{group_name}",
+            f"成员数：{member_count}",
+            f"成员上限：{max_member_count}",
+        ]
+        if group_level:
+            lines.append(f"群等级：{group_level}")
+        if group_create_time:
+            try:
+                lines.append(f"建群时间：{datetime.fromtimestamp(int(group_create_time)).strftime('%Y-%m-%d %H:%M:%S')}")
+            except (ValueError, TypeError, OSError):
+                lines.append(f"建群时间戳：{group_create_time}")
+        if group_memo:
+            lines.append(f"群简介：{group_memo}")
+
+        logger.info(f"获取群信息成功: group_id={group_id}")
+        return True, "\n".join(lines)
+
+
+class GetGroupMemberListTool(BaseTool):
+    """获取群成员列表。"""
+
+    name: str = "get_group_member_list"
+    description: str = (
+        "获取当前群聊的全部成员列表。"
+        "返回每个成员的 QQ 号、昵称、群名片、角色身份（群主/管理员/普通成员）、"
+        "专属头衔、群等级、性别、入群时间和最后发言时间。"
+        "常用于：查看群内所有成员、统计人数、查找管理员等。"
+        "注意：大群成员列表可能较长，返回内容可能被截断。"
+    )
+    chat_type: ChatType = ChatType.GROUP
+    associated_platforms: list[str] = ["qq"]
+
+    async def execute(
+        self,
+        no_cache: Annotated[bool, "是否不使用缓存（true=强制从服务器获取最新数据）"] = False,
+    ) -> tuple[bool, str]:
+        """返回群成员列表。"""
+        group_id = _get_group_id_from_context_tool(self)
+        if not group_id:
+            return False, "该工具只能在群聊上下文使用：未获取到 group_id。"
+
+        params = {
+            "group_id": _coerce_int_if_digit(group_id),
+            "no_cache": bool(no_cache),
+        }
+
+        adapter = adapter_api.get_adapter(_SNOWLUMA_ADAPTER_SIGNATURE)
+        if adapter is None:
+            return False, "snowluma_adapter 未启动。"
+        if not hasattr(adapter, "send_snowluma_api"):
+            return False, "snowluma_adapter 不支持 send_snowluma_api。"
+
+        try:
+            resp = await adapter.send_snowluma_api("get_group_member_list", params, timeout=60.0)  # type: ignore[attr-defined]
+        except Exception as exc:
+            logger.error(f"获取群成员列表失败: {exc}")
+            return False, f"获取群成员列表异常：{exc}"
+
+        status = str(resp.get("status") or "").strip().lower()
+        retcode = resp.get("retcode")
+        if status != "ok" or (retcode != 0 and retcode is not None):
+            return False, _format_snowluma_failure("get_group_member_list", resp, _get_error_hint())
+
+        members = resp.get("data") or []
+        if not members:
+            return True, "当前群没有成员数据。"
+
+        role_map = {"owner": "群主", "admin": "管理员", "member": "普通成员"}
+        sex_map = {"male": "男", "female": "女", "unknown": "未知"}
+
+        lines: list[str] = [f"群成员列表（共 {len(members)} 人）："]
+
+        # 按角色排序：群主 > 管理员 > 普通成员
+        role_order = {"owner": 0, "admin": 1, "member": 2}
+        members_sorted = sorted(members, key=lambda m: role_order.get(m.get("role", "member"), 2))
+
+        for i, m in enumerate(members_sorted, 1):
+            uid = m.get("user_id", "")
+            nickname = m.get("nickname", "未知")
+            card = m.get("card", "")
+            role = role_map.get(m.get("role", ""), m.get("role", "未知"))
+            title = m.get("title", "")
+            level = m.get("level", "")
+            sex = sex_map.get(m.get("sex", ""), m.get("sex", "未知"))
+            join_time = m.get("join_time", 0)
+
+            display_name = card if card else nickname
+            entry = f"{i}. {display_name}({uid}) [{role}]"
+            if title:
+                entry += f" 头衔:{title}"
+            if level:
+                entry += f" Lv:{level}"
+            if sex != "未知":
+                entry += f" {sex}"
+            if join_time:
+                try:
+                    entry += f" 入群:{datetime.fromtimestamp(int(join_time)).strftime('%Y-%m-%d')}"
+                except (ValueError, TypeError, OSError):
+                    pass
+            lines.append(entry)
+
+        logger.info(f"获取群成员列表成功: group_id={group_id}, count={len(members)}")
+        return True, "\n".join(lines)
+
+
 __all__ = [
     "GetGroupMemberInfoTool",
     "GetGroupNoticeTool",
@@ -446,4 +616,6 @@ __all__ = [
     "GetEssenceMsgListTool",
     "GetGroupHonorInfoTool",
     "GetGroupShutListTool",
+    "GetGroupInfoTool",
+    "GetGroupMemberListTool",
 ]

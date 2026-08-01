@@ -201,8 +201,8 @@ class _SnowLumaBaseAction(BaseAction):
 class MuteGroupMemberAction(_SnowLumaBaseAction):
     """群成员禁言/解禁。"""
 
-    action_name: str = "mute_group_member"
-    action_description: str = (
+    name: str = "mute_group_member"
+    description: str = (
         "在当前群聊中对指定用户执行禁言或解除禁言。需要你为群主或管理员，且目标权限低于你。"
         "执行前请确认你的身份，如不确定可先用 get_group_member_info 查询你的角色。"
         "传入 duration_seconds=0 表示解除禁言。"
@@ -241,8 +241,8 @@ class MuteGroupMemberAction(_SnowLumaBaseAction):
 class UnmuteGroupMemberAction(_SnowLumaBaseAction):
     """群成员解除禁言。"""
 
-    action_name: str = "unmute_group_member"
-    action_description: str = "在当前群聊中解除指定用户的禁言（duration=0）。"
+    name: str = "unmute_group_member"
+    description: str = "在当前群聊中解除指定用户的禁言（duration=0）。"
     chat_type: ChatType = ChatType.GROUP
 
     async def _feature_enabled(self, config: Any) -> bool:
@@ -271,8 +271,8 @@ class UnmuteGroupMemberAction(_SnowLumaBaseAction):
 class ReactToMessageAction(_SnowLumaBaseAction):
     """对指定消息添加表情回应（支持批量）。"""
 
-    action_name: str = "react_to_message"
-    action_description: str = (
+    name: str = "react_to_message"
+    description: str = (
         "对一条或多条消息添加表情回应（贴表情）。支持批量操作。"
         "传入 reactions 参数：一个 JSON 数组，每项格式为 {\"message_id\": \"消息ID\", \"emoji_id\": \"表情ID\"}。"
         "可以对同一条消息贴多个表情，也可以对不同消息分别贴表情。"
@@ -371,8 +371,8 @@ class ReactToMessageAction(_SnowLumaBaseAction):
 class PokeGroupMemberAction(_SnowLumaBaseAction):
     """戳一戳群成员。"""
 
-    action_name: str = "poke_group_member"
-    action_description: str = (
+    name: str = "poke_group_member"
+    description: str = (
         "在当前群聊中戳一戳指定用户，可戳同一个人多次，也可戳多个不同的人。"
         "传入多个QQ号用逗号分隔即可批量戳不同的人。"
     )
@@ -441,8 +441,8 @@ class PokeGroupMemberAction(_SnowLumaBaseAction):
 class RecallMessageAction(_SnowLumaBaseAction):
     """撤回消息。"""
 
-    action_name: str = "recall_message"
-    action_description: str = (
+    name: str = "recall_message"
+    description: str = (
         "撤回指定消息（需要机器人具备撤回权限；不同场景可能受时效限制）。"
     )
     chat_type: ChatType = ChatType.ALL
@@ -467,8 +467,8 @@ class RecallMessageAction(_SnowLumaBaseAction):
 class GroupSignAction(_SnowLumaBaseAction):
     """群打卡。"""
 
-    action_name: str = "group_sign"
-    action_description: str = "在当前群聊中执行群打卡。"
+    name: str = "group_sign"
+    description: str = "在当前群聊中执行群打卡。"
     chat_type: ChatType = ChatType.GROUP
 
     async def _feature_enabled(self, config: Any) -> bool:
@@ -509,8 +509,8 @@ class GroupSignAction(_SnowLumaBaseAction):
 class KickGroupMemberAction(_SnowLumaBaseAction):
     """踢出群成员。"""
 
-    action_name: str = "kick_group_member"
-    action_description: str = (
+    name: str = "kick_group_member"
+    description: str = (
         "在当前群聊中踢出指定用户。需要你为群主或管理员，且目标权限低于你。"
         "执行前请确认你的身份，如不确定可先用 get_group_member_info 查询你的角色。"
     )
@@ -548,8 +548,8 @@ class KickGroupMemberAction(_SnowLumaBaseAction):
 class SetGroupNameAction(_SnowLumaBaseAction):
     """修改群名。"""
 
-    action_name: str = "set_group_name"
-    action_description: str = (
+    name: str = "set_group_name"
+    description: str = (
         "修改当前群聊的名称。需要你为群主或管理员。"
         "执行前请确认你的身份，如不确定可先用 get_group_member_info 查询你的角色。"
     )
@@ -580,8 +580,8 @@ class SetGroupNameAction(_SnowLumaBaseAction):
 class SetGroupCardAction(_SnowLumaBaseAction):
     """修改群名片。"""
 
-    action_name: str = "set_group_card"
-    action_description: str = (
+    name: str = "set_group_card"
+    description: str = (
         "修改当前群聊中指定用户的群名片（也叫群昵称，即在群内显示的昵称名称）。"
         "修改自己的群名片不需要权限，修改他人的群名片需要你为群主或管理员，"
         "若需修改他人的群名片且不确定自身权限，可先用 get_group_member_info 查询你的角色。"
@@ -616,8 +616,8 @@ class SetGroupCardAction(_SnowLumaBaseAction):
 class SetGroupSpecialTitleAction(_SnowLumaBaseAction):
     """修改群头衔。"""
 
-    action_name: str = "set_group_special_title"
-    action_description: str = (
+    name: str = "set_group_special_title"
+    description: str = (
         "修改当前群聊中指定用户的群专属头衔。需要你为群主（管理员不可）。"
         "执行前请确认你的身份，如不确定可先用 get_group_member_info 查询你的角色。"
     )
@@ -653,9 +653,10 @@ class SetGroupSpecialTitleAction(_SnowLumaBaseAction):
 class SendGroupNoticeAction(_SnowLumaBaseAction):
     """发送群公告。"""
 
-    action_name: str = "send_group_notice"
-    action_description: str = (
-        "在当前群聊中发布一条群公告。可附带图片。群公告会展示在群公告页面，所有群成员可见。"
+    name: str = "send_group_notice"
+    description: str = (
+        "在当前群聊中发布一条群公告。可附带图片，支持置顶、弹窗推送、新成员推送、改名引导和回执确认。"
+        "群公告会展示在群公告页面，所有群成员可见。"
         "需要你为群主或管理员。执行前请确认你的身份，如不确定可先用 get_group_member_info 查询你的角色。"
     )
     chat_type: ChatType = ChatType.GROUP
@@ -667,6 +668,9 @@ class SendGroupNoticeAction(_SnowLumaBaseAction):
         self,
         content: Annotated[str, "群公告的正文内容"],
         image: Annotated[str, "公告附带图片的URL或Base64（可选，留空则无图）"] = "",
+        pinned: Annotated[bool, "是否置顶公告（true=置顶）"] = False,
+        notice_type: Annotated[int, "公告类型：0=普通公告,1=弹窗推送,2=新成员推送,3=改名引导。默认0"] = 0,
+        confirm_required: Annotated[bool, "是否需要群成员回执确认（true=需要确认）"] = False,
     ) -> tuple[bool, str]:
         group_id = _get_group_id_from_context(self)
         if not group_id:
@@ -675,21 +679,33 @@ class SendGroupNoticeAction(_SnowLumaBaseAction):
         params: dict[str, Any] = {
             "group_id": _coerce_int_if_digit(group_id),
             "content": str(content),
+            "pinned": bool(pinned),
+            "type": int(notice_type),
+            "confirm_required": bool(confirm_required),
         }
         if image:
             params["image"] = str(image)
 
         ok, msg = await _call_snowluma_api(action_name="_send_group_notice", params=params)
         if ok:
-            return True, "已成功发布群公告。"
+            type_names = {0: "普通公告", 1: "弹窗推送", 2: "新成员推送", 3: "改名引导"}
+            extras: list[str] = []
+            if pinned:
+                extras.append("已置顶")
+            if notice_type != 0:
+                extras.append(f"类型:{type_names.get(notice_type, str(notice_type))}")
+            if confirm_required:
+                extras.append("需回执确认")
+            suffix = f"（{'，'.join(extras)}）" if extras else ""
+            return True, f"已成功发布群公告{suffix}。"
         return False, msg
 
 
 class DeleteGroupNoticeAction(_SnowLumaBaseAction):
     """删除群公告。"""
 
-    action_name: str = "delete_group_notice"
-    action_description: str = (
+    name: str = "delete_group_notice"
+    description: str = (
         "删除当前群聊中的指定群公告。需要提供公告ID（notice_id），"
         "可通过 get_group_notice 工具获取群公告列表来拿到每条公告的ID。"
         "需要你为群主或管理员。执行前请确认你的身份，如不确定可先用 get_group_member_info 查询你的角色。"
@@ -721,8 +737,8 @@ class DeleteGroupNoticeAction(_SnowLumaBaseAction):
 class SendGroupForwardMsgAction(_SnowLumaBaseAction):
     """发送群合并转发消息。"""
 
-    action_name: str = "send_group_forward_msg"
-    action_description: str = (
+    name: str = "send_group_forward_msg"
+    description: str = (
         "在当前群聊中发送合并转发消息（合并转发卡片）。"
         "传入 messages 参数：一个 JSON 数组，每个元素是一个转发节点对象。"
         "转发节点格式：{\"nickname\": \"发送者昵称\", \"user_id\": \"QQ号\", \"content\": [消息段]}。"
@@ -768,8 +784,8 @@ class SendGroupForwardMsgAction(_SnowLumaBaseAction):
 class SetEssenceMsgAction(_SnowLumaBaseAction):
     """设置精华消息。"""
 
-    action_name: str = "set_essence_msg"
-    action_description: str = (
+    name: str = "set_essence_msg"
+    description: str = (
         "将指定消息设为群精华消息。需要提供消息ID（message_id）。"
         "需要你为群主或管理员。执行前请确认你的身份，如不确定可先用 get_group_member_info 查询你的角色。"
     )
@@ -795,8 +811,8 @@ class SetEssenceMsgAction(_SnowLumaBaseAction):
 class DeleteEssenceMsgAction(_SnowLumaBaseAction):
     """移除精华消息。"""
 
-    action_name: str = "delete_essence_msg"
-    action_description: str = (
+    name: str = "delete_essence_msg"
+    description: str = (
         "将指定消息从群精华消息中移除。需要提供消息ID（message_id）。"
         "需要你为群主或管理员。执行前请确认你的身份，如不确定可先用 get_group_member_info 查询你的角色。"
     )
@@ -822,8 +838,8 @@ class DeleteEssenceMsgAction(_SnowLumaBaseAction):
 class ForwardGroupSingleMsgAction(_SnowLumaBaseAction):
     """转发单条消息到群。"""
 
-    action_name: str = "forward_group_single_msg"
-    action_description: str = (
+    name: str = "forward_group_single_msg"
+    description: str = (
         "将一条已有消息（通过 message_id 标识）转发到指定的群。"
         "可以转发任何类型的消息，包括文字、图片、合并转发等。"
         "需要提供要转发的消息 ID 和目标群号。"
@@ -852,8 +868,8 @@ class ForwardGroupSingleMsgAction(_SnowLumaBaseAction):
 class ForwardFriendSingleMsgAction(_SnowLumaBaseAction):
     """转发单条消息给好友。"""
 
-    action_name: str = "forward_friend_single_msg"
-    action_description: str = (
+    name: str = "forward_friend_single_msg"
+    description: str = (
         "将一条已有消息（通过 message_id 标识）转发给指定好友。"
         "可以转发任何类型的消息，包括文字、图片、合并转发等。"
         "需要提供要转发的消息 ID 和目标好友 QQ 号。"
@@ -882,8 +898,8 @@ class ForwardFriendSingleMsgAction(_SnowLumaBaseAction):
 class SendLikeAction(_SnowLumaBaseAction):
     """给他人主页点赞。"""
 
-    action_name: str = "send_like"
-    action_description: str = (
+    name: str = "send_like"
+    description: str = (
         "给指定 QQ 用户的主页点赞。不需要好友关系，只要对方 QQ 号存在即可。"
         "点赞数量由配置决定（默认 10 个，非 SVIP 每日上限 10 次/人，SVIP 20 次/人）。"
         "每日对同一用户的点赞数有上限，超限会失败。"
@@ -920,11 +936,82 @@ class SendLikeAction(_SnowLumaBaseAction):
         return False, msg
 
 
+class SetGroupWholeBanAction(_SnowLumaBaseAction):
+    """全群禁言开关。"""
+
+    name: str = "set_group_whole_ban"
+    description: str = (
+        "在当前群聊中开启或关闭全员禁言。需要你为群主或管理员。"
+        "enable=true（默认）表示开启全员禁言，enable=false 表示关闭全员禁言。"
+        "可传入 duration_seconds 指定定时自动关闭的秒数（仅 enable=true 时有效），"
+        "例如 duration_seconds=1800 表示开启后 30 分钟自动关闭。"
+        "执行前请确认你的身份，如不确定可先用 get_group_member_info 查询你的角色。"
+    )
+    chat_type: ChatType = ChatType.GROUP
+
+    async def _feature_enabled(self, config: Any) -> bool:
+        return bool(getattr(getattr(config, "features", None), "enable_set_group_whole_ban", False))
+
+    async def execute(
+        self,
+        enable: Annotated[bool, "是否开启全员禁言（true=开启，false=关闭）"] = True,
+        duration_seconds: Annotated[int, "开启后多少秒自动关闭（仅 enable=true 时有效，0 表示不自动关闭）"] = 0,
+    ) -> tuple[bool, str]:
+        group_id = _get_group_id_from_context(self)
+        if not group_id:
+            return False, "该动作只能在群聊上下文使用：未获取到 group_id。"
+
+        gid = _coerce_int_if_digit(group_id)
+
+        params = {
+            "group_id": gid,
+            "enable": bool(enable),
+        }
+
+        ok, msg = await _call_snowluma_api(action_name="set_group_whole_ban", params=params)
+        if ok:
+            if enable and duration_seconds > 0:
+                # 注册延迟任务自动关闭全群禁言（内存态，重启后失效）
+                from src.kernel.concurrency import get_task_manager
+
+                async def _auto_unban() -> None:
+                    """延迟后自动关闭全群禁言。"""
+                    import asyncio
+
+                    await asyncio.sleep(duration_seconds)
+                    unban_params = {"group_id": gid, "enable": False}
+                    unban_ok, unban_msg = await _call_snowluma_api(
+                        action_name="set_group_whole_ban", params=unban_params
+                    )
+                    if unban_ok:
+                        logger.info(
+                            f"定时全群禁言已自动关闭：group_id={gid}, "
+                            f"持续 {duration_seconds}s"
+                        )
+                    else:
+                        logger.warning(
+                            f"定时全群禁言自动关闭失败：group_id={gid}, "
+                            f"duration={duration_seconds}s, msg={unban_msg}"
+                        )
+
+                get_task_manager().create_task(
+                    _auto_unban(),
+                    name=f"snowluma_extension_whole_ban_auto_off_{gid}",
+                    daemon=True,
+                )
+                return True, (
+                    f"已开启全员禁言，将在 {duration_seconds} 秒后自动关闭。"
+                )
+            action_desc = "开启" if enable else "关闭"
+            return True, f"已{action_desc}全员禁言。"
+        return False, msg
+
+
 class SendShareCardAction(_SnowLumaBaseAction):
     """发送推荐名片/群名片分享。"""
 
-    action_name: str = "send_share_card"
-    action_description: str = (
+    name: str = "send_share_card"
+    description: str = (
         "在当前会话中发送名片分享（群名片或个人名片）。\n"
         "- 分享群名片：传入 group_id（目标群号）\n"
         "- 分享个人名片：传入 user_id（目标 QQ 号）\n"
@@ -1027,4 +1114,5 @@ __all__ = [
     "ForwardFriendSingleMsgAction",
     "SendLikeAction",
     "SendShareCardAction",
+    "SetGroupWholeBanAction",
 ]

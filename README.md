@@ -18,6 +18,7 @@ SnowLuma 适配器扩展插件，为 Bot 提供 QQ 平台的高级操作能力�
 |--------|------|
 | `mute_group_member` | 禁言群成员 |
 | `unmute_group_member` | 解除禁言 |
+| `set_group_whole_ban` | 全群禁言开关 |
 | `react_to_message` | 对消息添加表情回应 |
 | `send_face` | 发送 QQ 原生表情 |
 | `poke_group_member` | 戳一戳群成员 |
@@ -35,6 +36,8 @@ SnowLuma 适配器扩展插件，为 Bot 提供 QQ 平台的高级操作能力�
 | 组件名 | 说明 |
 |--------|------|
 | `get_group_member_info` | 获取群成员信息 |
+| `get_group_info` | 获取群基本信息（群名、成员数等） |
+| `get_group_member_list` | 获取群成员列表 |
 | `get_group_notice` | 获取群公告列表 |
 | `get_qq_face_list` | 查询 QQ 表情列表 |
 
@@ -45,6 +48,8 @@ SnowLuma 适配器扩展插件，为 Bot 提供 QQ 平台的高级操作能力�
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `plugin.enabled` | `true` | 插件开关 |
+| `features.enable_mute` | `false` | 群成员禁言/解禁/查看禁言列表 |
+| `features.enable_set_group_whole_ban` | `false` | 全群禁言开关 |
 | `features.enable_react` | `true` | QQ 表情相关功能（贴表情回应、发表情、查询表情表） |
 | `scheduled_sign.enable` | `false` | 定时群打卡 |
 | `scheduled_sign.group_ids` | `[]` | 打卡群列表 |

@@ -12,6 +12,7 @@ from typing import cast
 from src.app.plugin_system.api import adapter_api, storage_api
 from src.core.components.types import EventType
 from src.kernel.event import EventDecision, get_event_bus
+from src.kernel.concurrency import get_task_manager
 from src.kernel.scheduler import TriggerType, get_unified_scheduler
 
 from src.app.plugin_system.api.log_api import get_logger
@@ -38,13 +39,16 @@ from .src.actions import (
     SetGroupCardAction,
     SetGroupNameAction,
     SetGroupSpecialTitleAction,
+    SetGroupWholeBanAction,
     UnmuteGroupMemberAction,
 )
 from .src.face_intercept_handler import FaceInterceptHandler
 from .src.tools import (
     GetEssenceMsgListTool,
     GetGroupHonorInfoTool,
+    GetGroupInfoTool,
     GetGroupMemberInfoTool,
+    GetGroupMemberListTool,
     GetGroupNoticeTool,
     GetGroupShutListTool,
     GetQQFaceListTool,
@@ -61,16 +65,20 @@ class SnowLumaExtensionPlugin(BasePlugin):
     """
 
     plugin_name = "snowluma_extension"
-    plugin_version = "1.0.1"
-    plugin_author = "MoFox Team"
+    plugin_author = "言柒"
     plugin_description = "SnowLuma 高级能力支持（群管理 Actions / 查询 Tools / 定时打卡）"
     configs: list[type] = [SnowLumaExtensionConfig]
 
     def get_components(self) -> list[type]:
+        config = cast(SnowLumaExtensionConfig, self.config)
+        if not config.plugin.enabled:
+            return []
+
         components: list[type] = [
             # 群管理 Actions
             MuteGroupMemberAction,
             UnmuteGroupMemberAction,
+            SetGroupWholeBanAction,
             ReactToMessageAction,
             PokeGroupMemberAction,
             RecallMessageAction,
@@ -97,6 +105,8 @@ class SnowLumaExtensionPlugin(BasePlugin):
             config = cast(SnowLumaExtensionConfig, self.config)
             if config.features.enable_get_group_member_info:
                 components.append(GetGroupMemberInfoTool)
+                components.append(GetGroupInfoTool)
+                components.append(GetGroupMemberListTool)
             if config.features.enable_get_group_notice:
                 components.append(GetGroupNoticeTool)
             if config.features.enable_react:
@@ -137,108 +147,219 @@ class SnowLumaExtensionPlugin(BasePlugin):
     async def _setup_scheduled_sign(self) -> None:
         """注册定时群打卡调度任务。
 
-        使用插件自身的群号列表配置，每天在指定时间点打卡。
-        群与群之间有随机抖动延迟，避免同时打卡触发风控。
+        使用一次性 ``delay_seconds`` 任务 + 回调内延迟自重注册模式。
+
+        调度器 ``_check_time_trigger`` 在 ``is_recurring=True`` 且 config 含
+        ``interval_seconds`` 时会忽略 ``trigger_at``，导致首次触发时间为
+        ``created_at + interval_seconds`` 而非配置的目标时间。
+        因此这里改为注册一次性延迟任务，每次回调完成后重新注册下一天的
+        延迟任务，保证触发时间始终对齐目标。
         """
         import asyncio
 
         sign_config = self.config.scheduled_sign  # type: ignore[union-attr]
 
-        # 从自身配置读取群号列表
         if not sign_config.group_ids:
             logger.warning("定时打卡已启用但未配置 group_ids，跳过")
             return
 
         group_ids = [str(g) for g in sign_config.group_ids]
 
-        # 计算首次触发时间（今天的 sign_time 或明天的）
         sign_time = sign_config.sign_time
         try:
             hour, minute = map(int, sign_time.split(":"))
         except (ValueError, AttributeError):
-            logger.warning(f"定时打卡时间格式无效：{sign_time}（应为 HH:MM），使用默认 08:00")
+            logger.warning(
+                f"定时打卡时间格式无效：{sign_time}（应为 HH:MM），使用默认 08:00"
+            )
             hour, minute = 8, 0
-
-        now = datetime.now()
-        today_sign_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        missed_today = today_sign_dt <= now
-
-        trigger_dt = today_sign_dt
-        if missed_today:
-            trigger_dt += timedelta(days=1)
-
-        trigger_at = trigger_dt.strftime("%Y-%m-%dT%H:%M:%S")
-        interval_seconds = 86400  # 24 小时
 
         jitter_min = max(0, sign_config.jitter_min_seconds)
         jitter_max = max(jitter_min, sign_config.jitter_max_seconds)
+        task_name = "snowluma_extension_scheduled_sign"
+
+        # ── 内部工具函数 ──
+
+        def _calc_delay() -> tuple[float, datetime]:
+            """计算到下一个目标时刻（HH:MM）的秒数及目标 datetime。"""
+            cur = datetime.now()
+            target = cur.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if target <= cur:
+                target += timedelta(days=1)
+            return max(1.0, (target - cur).total_seconds()), target
+
+        async def _register_next() -> None:
+            """注册下一次打卡的一次性延迟任务。"""
+            delay, target = _calc_delay()
+            try:
+                scheduler = get_unified_scheduler()
+                await scheduler.create_schedule(
+                    callback=_do_sign,
+                    trigger_type=TriggerType.TIME,
+                    trigger_config={"delay_seconds": delay},
+                    is_recurring=False,
+                    task_name=task_name,
+                    force_overwrite=True,
+                )
+                logger.info(
+                    f"定时打卡已注册：groups={group_ids}, "
+                    f"目标 {hour:02d}:{minute:02d}, "
+                    f"抖动 {jitter_min}-{jitter_max}s, "
+                    f"{delay:.0f}s 后触发"
+                    f"（{target.strftime('%Y-%m-%d %H:%M:%S')}）"
+                )
+            except Exception as exc:
+                logger.error(f"注册定时打卡任务失败：{exc}")
+
+        async def _schedule_next_deferred() -> None:
+            """延迟 5 秒后注册下一次打卡。
+
+            当前任务是一次性的，回调结束后调度器会清理它。
+            延迟确保旧任务从 ``_tasks_by_name`` 中移除后再注册同名新任务，
+            避免 ``force_overwrite`` 取消正在执行的自身 asyncio Task。
+            """
+
+            async def _inner() -> None:
+                await asyncio.sleep(5)
+                await _register_next()
+
+            get_task_manager().create_task(
+                _inner(),
+                name="snowluma_extension_sign_reschedule",
+                daemon=True,
+            )
 
         async def _do_sign() -> None:
-            """执行定时打卡，群之间随机抖动。"""
-            adapter = adapter_api.get_adapter("snowluma_adapter:adapter:snowluma_adapter")
+            """执行定时打卡，完成后延迟注册下一次任务。"""
+            today_str = datetime.now().strftime("%Y-%m-%d")
+
+            # 防重复：检查今天是否已打过卡
+            try:
+                record = await storage_api.load_json(
+                    "snowluma_extension", "sign_record"
+                )
+                if record and record.get("last_sign_date") == today_str:
+                    logger.debug(f"今日（{today_str}）已打过卡，跳过")
+                    await _schedule_next_deferred()
+                    return
+            except Exception:
+                pass
+
+            adapter = adapter_api.get_adapter(
+                "snowluma_adapter:adapter:snowluma_adapter"
+            )
             if adapter is None:
                 logger.warning("定时打卡失败：snowluma_adapter 未启动")
+                await _schedule_next_deferred()
                 return
 
             for gid in group_ids:
-                # 随机抖动延迟
                 if jitter_max > 0:
                     delay = random.uniform(jitter_min, jitter_max)
                     logger.debug(f"群 {gid} 打卡前等待 {delay:.1f}s")
                     await asyncio.sleep(delay)
-
                 try:
                     params = {"group_id": int(gid) if gid.isdigit() else gid}
-                    await adapter.send_snowluma_api("set_group_sign", params, timeout=30.0)  # type: ignore[attr-defined]
+                    await adapter.send_snowluma_api(
+                        "set_group_sign", params, timeout=30.0
+                    )  # type: ignore[attr-defined]
                     logger.info(f"定时打卡成功：group_id={gid}")
                 except Exception as exc:
                     logger.error(f"定时打卡失败：group_id={gid}, error={exc}")
 
-            # 记录今天已打卡
+            # 记录今天已打卡（用执行时刻的日期）
             try:
-                await storage_api.save_json("snowluma_extension", "sign_record", {"last_sign_date": now.strftime("%Y-%m-%d")})
+                await storage_api.save_json(
+                    "snowluma_extension",
+                    "sign_record",
+                    {"last_sign_date": today_str},
+                )
             except Exception:
                 pass
 
-        # 补打：如果今天打卡时间已过，检查是否已打过，未打过则延迟补打
-        if missed_today:
+            # 延迟注册下一次
+            await _schedule_next_deferred()
 
-            async def _delayed_sign() -> None:
-                """延迟补打，等待 adapter WebSocket 连接建立。"""
-                # 检查今天是否已打过卡
-                today_str = datetime.now().strftime("%Y-%m-%d")
-                try:
-                    record = await storage_api.load_json("snowluma_extension", "sign_record")
-                    if record and record.get("last_sign_date") == today_str:
-                        logger.info("今日已打过卡，跳过补打")
+        # ── 启动时检查补打 ──
+
+        now = datetime.now()
+        today_sign_dt = now.replace(
+            hour=hour, minute=minute, second=0, microsecond=0
+        )
+
+        if today_sign_dt <= now:
+            # 今天打卡时间已过，检查是否需要补打
+            today_str = now.strftime("%Y-%m-%d")
+            need_catch_up = True
+            try:
+                record = await storage_api.load_json(
+                    "snowluma_extension", "sign_record"
+                )
+                if record and record.get("last_sign_date") == today_str:
+                    logger.info("今日已打过卡，跳过补打")
+                    need_catch_up = False
+            except Exception:
+                pass
+
+            if need_catch_up:
+
+                async def _delayed_catch_up() -> None:
+                    """等待 adapter 连接建立后补打。"""
+                    logger.info(
+                        "检测到今日打卡时间已过且未打过卡，"
+                        "10 秒后自动补打"
+                    )
+                    await asyncio.sleep(10)
+                    catch_up_date = datetime.now().strftime("%Y-%m-%d")
+
+                    # 再次检查，避免与定时任务竞争
+                    try:
+                        rec = await storage_api.load_json(
+                            "snowluma_extension", "sign_record"
+                        )
+                        if rec and rec.get("last_sign_date") == catch_up_date:
+                            logger.info("补打前发现今日已打过卡，跳过")
+                            return
+                    except Exception:
+                        pass
+
+                    adapter = adapter_api.get_adapter(
+                        "snowluma_adapter:adapter:snowluma_adapter"
+                    )
+                    if adapter is None:
+                        logger.warning("补打失败：snowluma_adapter 未启动")
                         return
-                except Exception:
-                    pass
+                    for gid in group_ids:
+                        if jitter_max > 0:
+                            await asyncio.sleep(
+                                random.uniform(jitter_min, jitter_max)
+                            )
+                        try:
+                            params = {
+                                "group_id": int(gid) if gid.isdigit() else gid
+                            }
+                            await adapter.send_snowluma_api(
+                                "set_group_sign", params, timeout=30.0
+                            )  # type: ignore[attr-defined]
+                            logger.info(f"补打成功：group_id={gid}")
+                        except Exception as exc:
+                            logger.error(
+                                f"补打失败：group_id={gid}, error={exc}"
+                            )
+                    try:
+                        await storage_api.save_json(
+                            "snowluma_extension",
+                            "sign_record",
+                            {"last_sign_date": catch_up_date},
+                        )
+                    except Exception:
+                        pass
 
-                logger.info("检测到今日打卡时间已过且未打过卡，10 秒后自动补打")
-                await asyncio.sleep(10)
-                await _do_sign()
+                get_task_manager().create_task(
+                    _delayed_catch_up(),
+                    name="snowluma_extension_delayed_sign",
+                    daemon=True,
+                )
 
-            asyncio.create_task(_delayed_sign())
-
-        try:
-            scheduler = get_unified_scheduler()
-            await scheduler.create_schedule(
-                callback=_do_sign,
-                trigger_type=TriggerType.TIME,
-                trigger_config={
-                    "trigger_at": trigger_at,
-                    "interval_seconds": interval_seconds,
-                },
-                is_recurring=True,
-                task_name="snowluma_extension_scheduled_sign",
-                force_overwrite=True,
-            )
-            logger.info(
-                f"定时打卡已注册：groups={group_ids}, "
-                f"每日 {sign_time} 打卡, "
-                f"抖动 {jitter_min}-{jitter_max}s, "
-                f"首次触发={trigger_at}"
-            )
-        except Exception as exc:
-            logger.error(f"注册定时打卡任务失败：{exc}")
+        # 注册下一次定时打卡（无论是否补打都需要）
+        await _register_next()

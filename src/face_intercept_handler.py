@@ -134,8 +134,8 @@ class FaceInterceptHandler(BaseEventHandler):
     自动替换为 QQ face 消息段，使模型可以像写文本一样发送 QQ 表情。
     """
 
-    handler_name: str = "face_intercept_handler"
-    handler_description: str = "拦截消息发送，将文本中的表情标记替换为 QQ face 消息段"
+    name: str = "face_intercept_handler"
+    description: str = "拦截消息发送，将文本中的表情标记替换为 QQ face 消息段"
 
     weight: int = 50
     intercept_message: bool = False
