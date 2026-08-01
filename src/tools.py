@@ -609,6 +609,81 @@ class GetGroupMemberListTool(BaseTool):
         return True, "\n".join(lines)
 
 
+class GetBotMessagesTool(BaseTool):
+    """查询 bot 自己最近发送的消息列表。"""
+
+    name: str = "get_bot_messages"
+    description: str = (
+        "查询你自己（bot）最近发送的消息列表，返回每条消息的 message_id 和内容摘要。"
+        "结果按时间倒序排列（最新的在最前面）。"
+        "主要用于获取 message_id 以便后续撤回消息（recall_message）、贴表情回应（react_to_message）等操作。"
+        "注意：QQ 撤回消息有 2 分钟时效限制，超过时效的消息即使拿到 message_id 也无法撤回。"
+    )
+    chat_type: ChatType = ChatType.ALL
+    associated_platforms: list[str] = ["qq"]
+
+    async def execute(
+        self,
+        count: Annotated[int, "查询的消息数量，默认5条，最大20条"] = 5,
+    ) -> tuple[bool, str]:
+        from datetime import datetime
+
+        from src.core.managers.stream_manager import get_stream_manager
+
+        stream_id = self.get_current_stream_id()
+        if not stream_id:
+            return False, "无法获取当前聊天流 ID。"
+
+        chat_stream = get_stream_manager()._streams.get(stream_id)  # noqa: SLF001
+        if chat_stream is None:
+            return False, "当前聊天流不存在，无法查询历史消息。"
+
+        context = chat_stream.context
+
+        # 从历史消息中逆序查找 bot 自己发送的消息
+        bot_messages = [
+            msg
+            for msg in reversed(context.history_messages)
+            if msg.sender_role == "bot" and msg.message_id
+        ]
+
+        if not bot_messages:
+            return True, "你最近没有发送过消息。"
+
+        # 限制数量
+        count = max(1, min(count, 20))
+        bot_messages = bot_messages[:count]
+
+        lines: list[str] = []
+        for msg in bot_messages:
+            # 内容摘要
+            if msg.processed_plain_text:
+                text = msg.processed_plain_text[:60]
+            else:
+                text = str(msg.content)[:60]
+
+            # 时间格式化
+            time_str = ""
+            try:
+                from datetime import datetime as _dt
+
+                if isinstance(msg.time, (int, float)):
+                    ts = float(msg.time)
+                elif isinstance(msg.time, _dt):
+                    ts = msg.time.timestamp()
+                else:
+                    ts = 0.0
+                time_str = _dt.fromtimestamp(ts).strftime("%H:%M:%S")
+            except (ValueError, TypeError, OSError):
+                time_str = "未知时间"
+
+            lines.append(f"[{time_str}] message_id={msg.message_id} 内容: {text}")
+
+        result = f"你最近发送了 {len(bot_messages)} 条消息：\n" + "\n".join(lines)
+        result += "\n\n提示：使用 recall_message Action 并传入 message_id 即可撤回对应消息。"
+        return True, result
+
+
 __all__ = [
     "GetGroupMemberInfoTool",
     "GetGroupNoticeTool",
@@ -618,4 +693,5 @@ __all__ = [
     "GetGroupShutListTool",
     "GetGroupInfoTool",
     "GetGroupMemberListTool",
+    "GetBotMessagesTool",
 ]

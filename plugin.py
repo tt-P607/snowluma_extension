@@ -44,6 +44,7 @@ from .src.actions import (
 )
 from .src.face_intercept_handler import FaceInterceptHandler
 from .src.tools import (
+    GetBotMessagesTool,
     GetEssenceMsgListTool,
     GetGroupHonorInfoTool,
     GetGroupInfoTool,
@@ -117,6 +118,8 @@ class SnowLumaExtensionPlugin(BasePlugin):
                 components.append(GetGroupHonorInfoTool)
             if config.features.enable_mute:
                 components.append(GetGroupShutListTool)
+            if config.features.enable_recall:
+                components.append(GetBotMessagesTool)
 
         return components
 

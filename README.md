@@ -40,6 +40,7 @@ SnowLuma 适配器扩展插件，为 Bot 提供 QQ 平台的高级操作能力�
 | `get_group_member_list` | 获取群成员列表 |
 | `get_group_notice` | 获取群公告列表 |
 | `get_qq_face_list` | 查询 QQ 表情列表 |
+| `get_bot_messages` | 查询 bot 自己最近发送的消息（含 message_id），配合撤回使用 |
 
 ## 配置说明
 
@@ -51,6 +52,7 @@ SnowLuma 适配器扩展插件，为 Bot 提供 QQ 平台的高级操作能力�
 | `features.enable_mute` | `false` | 群成员禁言/解禁/查看禁言列表 |
 | `features.enable_set_group_whole_ban` | `false` | 全群禁言开关 |
 | `features.enable_react` | `true` | QQ 表情相关功能（贴表情回应、发表情、查询表情表） |
+| `features.enable_recall` | `false` | 消息撤回（含查询 bot 自己消息 ID 的 Tool） |
 | `scheduled_sign.enable` | `false` | 定时群打卡 |
 | `scheduled_sign.group_ids` | `[]` | 打卡群列表 |
 | `scheduled_sign.sign_time` | `"08:00"` | 打卡时间 |
