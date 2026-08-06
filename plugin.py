@@ -42,6 +42,7 @@ from .src.actions import (
     SetGroupWholeBanAction,
     UnmuteGroupMemberAction,
 )
+from .src.bot_role_reminder import BotRoleReminderHandler
 from .src.face_intercept_handler import FaceInterceptHandler
 from .src.tools import (
     GetBotMessagesTool,
@@ -99,6 +100,8 @@ class SnowLumaExtensionPlugin(BasePlugin):
             SendShareCardAction,
             # 事件拦截器
             FaceInterceptHandler,
+            # Bot 身份/群权限自动注入
+            BotRoleReminderHandler,
         ]
 
         # Tool 组件按需注册

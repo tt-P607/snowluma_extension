@@ -84,7 +84,6 @@ class GetGroupMemberInfoTool(BaseTool):
         sex = sex_map.get(data.get("sex", ""), data.get("sex", "未知"))
         age = data.get("age", 0)
         join_time = data.get("join_time", 0)
-        last_sent_time = data.get("last_sent_time", 0)
 
         lines: list[str] = [
             f"QQ号：{user_id}",
@@ -102,8 +101,13 @@ class GetGroupMemberInfoTool(BaseTool):
             lines.append(f"年龄：{age}")
         if join_time:
             lines.append(f"入群时间：{datetime.fromtimestamp(join_time).strftime('%Y-%m-%d %H:%M:%S')}")
-        if last_sent_time:
-            lines.append(f"最后发言：{datetime.fromtimestamp(last_sent_time).strftime('%Y-%m-%d %H:%M:%S')}")
+
+        # bot 主动查询自己时，同步刷新该群的 bot_role reminder（忽略 TTL 强制更新）
+        await _maybe_refresh_bot_role_on_self_query(
+            tool=self,
+            group_id=group_id,
+            user_id=user_id,
+        )
 
         logger.info(f"SnowLuma API 调用成功: action=get_group_member_info, user_id={user_id}")
         return True, "\n".join(lines)
@@ -119,6 +123,55 @@ def _get_group_id_from_context_tool(tool: BaseTool) -> Any:
             return group_id
 
     return None
+
+
+async def _maybe_refresh_bot_role_on_self_query(
+    *,
+    tool: BaseTool,
+    group_id: Any,
+    user_id: str,
+) -> None:
+    """bot 主动查询自己时，强制刷新该群的 bot_role reminder 与 TTL。
+
+    Args:
+        tool: 当前工具实例。
+        group_id: 群号。
+        user_id: 被查询的 QQ 号。
+    """
+
+    if not group_id or not user_id:
+        return
+
+    try:
+        bot_info = await adapter_api.get_bot_info_by_platform("qq")
+    except Exception:
+        bot_info = None
+    if not bot_info or not bot_info.get("bot_id"):
+        return
+    if str(user_id) != str(bot_info["bot_id"]):
+        return
+
+    config = getattr(tool.plugin, "config", None)
+    bot_role_cfg = getattr(config, "bot_role", None) if config is not None else None
+    if bot_role_cfg is None or not bool(getattr(bot_role_cfg, "enable", False)):
+        return
+
+    stream_id = tool.get_current_stream_id()
+    if not stream_id:
+        return
+
+    from .bot_role_reminder import fetch_and_update_bot_role
+
+    try:
+        await fetch_and_update_bot_role(
+            stream_id=stream_id,
+            group_id=str(group_id),
+            config=config,
+            force=True,
+            source="self_query",
+        )
+    except Exception as exc:
+        logger.warning(f"bot 主动查询自己时刷新 bot_role reminder 失败: {exc}")
 
 
 class GetGroupNoticeTool(BaseTool):
@@ -626,8 +679,6 @@ class GetBotMessagesTool(BaseTool):
         self,
         count: Annotated[int, "查询的消息数量，默认5条，最大20条"] = 5,
     ) -> tuple[bool, str]:
-        from datetime import datetime
-
         from src.core.managers.stream_manager import get_stream_manager
 
         stream_id = self.get_current_stream_id()

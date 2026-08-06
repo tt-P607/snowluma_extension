@@ -204,7 +204,6 @@ class MuteGroupMemberAction(_SnowLumaBaseAction):
     name: str = "mute_group_member"
     description: str = (
         "在当前群聊中对指定用户执行禁言或解除禁言。需要你为群主或管理员，且目标权限低于你。"
-        "执行前请确认你的身份，如不确定可先用 get_group_member_info 查询你的角色。"
         "传入 duration_seconds=0 表示解除禁言。"
     )
     chat_type: ChatType = ChatType.GROUP
@@ -512,7 +511,6 @@ class KickGroupMemberAction(_SnowLumaBaseAction):
     name: str = "kick_group_member"
     description: str = (
         "在当前群聊中踢出指定用户。需要你为群主或管理员，且目标权限低于你。"
-        "执行前请确认你的身份，如不确定可先用 get_group_member_info 查询你的角色。"
     )
     chat_type: ChatType = ChatType.GROUP
 
@@ -551,7 +549,6 @@ class SetGroupNameAction(_SnowLumaBaseAction):
     name: str = "set_group_name"
     description: str = (
         "修改当前群聊的名称。需要你为群主或管理员。"
-        "执行前请确认你的身份，如不确定可先用 get_group_member_info 查询你的角色。"
     )
     chat_type: ChatType = ChatType.GROUP
 
@@ -583,8 +580,7 @@ class SetGroupCardAction(_SnowLumaBaseAction):
     name: str = "set_group_card"
     description: str = (
         "修改当前群聊中指定用户的群名片（也叫群昵称，即在群内显示的昵称名称）。"
-        "修改自己的群名片不需要权限，修改他人的群名片需要你为群主或管理员，"
-        "若需修改他人的群名片且不确定自身权限，可先用 get_group_member_info 查询你的角色。"
+        "修改自己的群名片不需要权限，修改他人的群名片需要你为群主或管理员。"
     )
     chat_type: ChatType = ChatType.GROUP
 
@@ -619,7 +615,6 @@ class SetGroupSpecialTitleAction(_SnowLumaBaseAction):
     name: str = "set_group_special_title"
     description: str = (
         "修改当前群聊中指定用户的群专属头衔。需要你为群主（管理员不可）。"
-        "执行前请确认你的身份，如不确定可先用 get_group_member_info 查询你的角色。"
     )
     chat_type: ChatType = ChatType.GROUP
 
@@ -657,7 +652,7 @@ class SendGroupNoticeAction(_SnowLumaBaseAction):
     description: str = (
         "在当前群聊中发布一条群公告。可附带图片，支持置顶、弹窗推送、新成员推送、改名引导和回执确认。"
         "群公告会展示在群公告页面，所有群成员可见。"
-        "需要你为群主或管理员。执行前请确认你的身份，如不确定可先用 get_group_member_info 查询你的角色。"
+        "需要你为群主或管理员。"
     )
     chat_type: ChatType = ChatType.GROUP
 
@@ -708,7 +703,7 @@ class DeleteGroupNoticeAction(_SnowLumaBaseAction):
     description: str = (
         "删除当前群聊中的指定群公告。需要提供公告ID（notice_id），"
         "可通过 get_group_notice 工具获取群公告列表来拿到每条公告的ID。"
-        "需要你为群主或管理员。执行前请确认你的身份，如不确定可先用 get_group_member_info 查询你的角色。"
+        "需要你为群主或管理员。"
     )
     chat_type: ChatType = ChatType.GROUP
 
@@ -787,7 +782,7 @@ class SetEssenceMsgAction(_SnowLumaBaseAction):
     name: str = "set_essence_msg"
     description: str = (
         "将指定消息设为群精华消息。需要提供消息ID（message_id）。"
-        "需要你为群主或管理员。执行前请确认你的身份，如不确定可先用 get_group_member_info 查询你的角色。"
+        "需要你为群主或管理员。"
     )
     chat_type: ChatType = ChatType.GROUP
 
@@ -814,7 +809,7 @@ class DeleteEssenceMsgAction(_SnowLumaBaseAction):
     name: str = "delete_essence_msg"
     description: str = (
         "将指定消息从群精华消息中移除。需要提供消息ID（message_id）。"
-        "需要你为群主或管理员。执行前请确认你的身份，如不确定可先用 get_group_member_info 查询你的角色。"
+        "需要你为群主或管理员。"
     )
     chat_type: ChatType = ChatType.GROUP
 
@@ -945,7 +940,6 @@ class SetGroupWholeBanAction(_SnowLumaBaseAction):
         "enable=true（默认）表示开启全员禁言，enable=false 表示关闭全员禁言。"
         "可传入 duration_seconds 指定定时自动关闭的秒数（仅 enable=true 时有效），"
         "例如 duration_seconds=1800 表示开启后 30 分钟自动关闭。"
-        "执行前请确认你的身份，如不确定可先用 get_group_member_info 查询你的角色。"
     )
     chat_type: ChatType = ChatType.GROUP
 

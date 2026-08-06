@@ -64,6 +64,23 @@ class SnowLumaExtensionConfig(BaseConfig):
         send_like_times: int = Field(default=10, description="每次点赞的数量（非 SVIP 上限 10，SVIP 上限 20）")
         enable_send_share_card: bool = Field(default=True, description="是否启用：发送群名片/个人名片分享")
 
+    @config_section("bot_role")
+    class BotRoleSection(SectionBase):
+        """Bot 身份/群权限自动注入配置。
+
+        群消息到达时自动查询 bot 在当前群的身份资料与荣誉，
+        通过 system reminder 注入 LLM 上下文；TTL 内不重复查询。
+        """
+
+        enable: bool = Field(
+            default=True,
+            description="是否启用 bot 身份/群权限自动注入",
+        )
+        ttl_seconds: int = Field(
+            default=28800,
+            description="每群身份/荣誉查询的刷新间隔（秒），默认 8 小时（28800）",
+        )
+
     @config_section("scheduled_sign")
     class ScheduledSignSection(SectionBase):
         """定时群打卡配置。
@@ -95,6 +112,7 @@ class SnowLumaExtensionConfig(BaseConfig):
 
     plugin: PluginSection = Field(default_factory=PluginSection)
     features: FeaturesSection = Field(default_factory=FeaturesSection)
+    bot_role: BotRoleSection = Field(default_factory=BotRoleSection)
     scheduled_sign: ScheduledSignSection = Field(default_factory=ScheduledSignSection)
 
 
