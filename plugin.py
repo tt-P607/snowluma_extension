@@ -67,8 +67,6 @@ class SnowLumaExtensionPlugin(BasePlugin):
     """
 
     plugin_name = "snowluma_extension"
-    plugin_author = "言柒"
-    plugin_description = "SnowLuma 高级能力支持（群管理 Actions / 查询 Tools / 定时打卡）"
     configs: list[type] = [SnowLumaExtensionConfig]
 
     def get_components(self) -> list[type]:
