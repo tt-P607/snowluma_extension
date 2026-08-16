@@ -7,19 +7,25 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated, Any
+import asyncio
+import random
+from datetime import datetime
+from typing import Annotated, Any, cast
 
-from src.app.plugin_system.api import adapter_api
+import orjson
+
+from src.app.plugin_system.api import adapter_api, plugin_api, storage_api
 from src.app.plugin_system.api.log_api import get_logger
-from src.core.components.base.action import BaseAction
-from src.core.components.types import ChatType
+from src.app.plugin_system.base import BaseAction
+from src.app.plugin_system.types import ChatType
+from src.kernel.concurrency import get_task_manager
+
+from ..config import SnowLumaExtensionConfig
+from .qq_faces import QQ_FACE
 
 logger = get_logger("snowluma_extension")
 
 _SNOWLUMA_ADAPTER_SIGNATURE = "snowluma_adapter:adapter:snowluma_adapter"
-
-if TYPE_CHECKING:
-    pass
 
 
 def _coerce_int_if_digit(value: Any) -> Any:
@@ -118,14 +124,13 @@ def _format_snowluma_failure(action: str, resp: dict[str, Any], error_hint: str 
 
 
 def _get_error_hint() -> str:
-    """从 snowluma_extension 插件配置中获取 error_hint。"""
+    """获取插件配置中的错误提示词。"""
 
     try:
-        from src.core.managers import get_plugin_manager
-        plugin = get_plugin_manager().get_plugin("snowluma_extension")
+        plugin = plugin_api.get_plugin("snowluma_extension")
         if plugin and plugin.config:
-            config = plugin.config
-            return str(getattr(getattr(config, "plugin", None), "error_hint", "") or "")  # type: ignore[union-attr]
+            config = cast(SnowLumaExtensionConfig, plugin.config)
+            return config.plugin.error_hint
     except Exception:
         pass
     return ""
@@ -137,7 +142,16 @@ async def _call_snowluma_api(
     params: dict[str, Any],
     timeout: float = 30.0,
 ) -> tuple[bool, str]:
-    """调用 snowluma_adapter API 并统一解析响应。"""
+    """调用 snowluma_adapter API 并统一解析响应。
+
+    Args:
+        action_name: SnowLuma API 动作名称
+        params: API 参数
+        timeout: 超时时间（秒）
+
+    Returns:
+        tuple[bool, str]: (是否成功, 结果文本)
+    """
 
     adapter = adapter_api.get_adapter(_SNOWLUMA_ADAPTER_SIGNATURE)
     if adapter is None:
@@ -171,6 +185,59 @@ async def _call_snowluma_api(
     return False, _format_snowluma_failure(action_name, resp, _get_error_hint())
 
 
+async def _call_snowluma_api_with_data(
+    *,
+    action_name: str,
+    params: dict[str, Any],
+    timeout: float = 30.0,
+) -> tuple[bool, str, Any]:
+    """调用 snowluma_adapter API 并返回 data 字段。
+
+    在 ``_call_snowluma_api`` 基础上额外返回响应的 ``data`` 字段，
+    供需要处理返回数据的 Tool / 轮询器复用。
+
+    Args:
+        action_name: SnowLuma API 动作名称
+        params: API 参数
+        timeout: 超时时间（秒）
+
+    Returns:
+        tuple[bool, str, Any]: (是否成功, 结果文本, data 字段)
+    """
+
+    adapter = adapter_api.get_adapter(_SNOWLUMA_ADAPTER_SIGNATURE)
+    if adapter is None:
+        logger.warning(f"SnowLuma API 调用失败：adapter 未找到 (signature={_SNOWLUMA_ADAPTER_SIGNATURE})")
+        return False, "snowluma_adapter 未启动：请先启用并启动 snowluma_adapter 插件。", None
+
+    if not hasattr(adapter, "send_snowluma_api"):
+        logger.warning(f"SnowLuma API 调用失败：adapter 不支持 send_snowluma_api (type={type(adapter).__name__})")
+        return False, "snowluma_adapter 不支持 send_snowluma_api：请确认 snowluma_adapter 版本兼容。", None
+
+    logger.debug(f"调用 SnowLuma API: action={action_name}, params={params}")
+
+    try:
+        resp = await adapter.send_snowluma_api(action_name, params, timeout=timeout)  # type: ignore[attr-defined]
+    except Exception as exc:
+        logger.error(f"SnowLuma API 调用异常: action={action_name}, params={params}, error={exc}")
+        return (
+            False,
+            f"调用 SnowLuma API 异常：{exc}\n- action={action_name}\n- params={params}",
+            None,
+        )
+
+    logger.debug(f"SnowLuma API 响应: action={action_name}, resp={resp}")
+
+    status = str(resp.get("status") or "").strip().lower()
+    retcode = resp.get("retcode")
+    if status == "ok" and (retcode == 0 or retcode is None):
+        logger.info(f"SnowLuma API 调用成功: action={action_name}")
+        return True, "ok", resp.get("data")
+
+    logger.warning(f"SnowLuma API 调用失败: action={action_name}, status={status}, retcode={retcode}, resp={resp}")
+    return False, _format_snowluma_failure(action_name, resp, _get_error_hint()), None
+
+
 class _SnowLumaBaseAction(BaseAction):
     """snowluma_extension Action 基类：提供通用激活判断。"""
 
@@ -180,18 +247,61 @@ class _SnowLumaBaseAction(BaseAction):
     async def go_activate(self) -> bool:  # noqa: D401
         """根据插件配置判定是否激活。"""
 
-        config = getattr(self.plugin, "config", None)
-        if config is None:
-            return False
-
-        plugin_section = getattr(config, "plugin", None)
-        if plugin_section is None or not bool(getattr(plugin_section, "enabled", True)):
+        config = cast(SnowLumaExtensionConfig | None, self.plugin.config)
+        if config is None or not config.plugin.enabled:
             return False
 
         return await self._feature_enabled(config)
 
-    async def _feature_enabled(self, config: Any) -> bool:
+    async def _feature_enabled(self, config: SnowLumaExtensionConfig) -> bool:
         raise NotImplementedError
+
+
+class HandleGroupJoinRequestAction(_SnowLumaBaseAction):
+    """处理加群请求（通过/拒绝）。"""
+
+    name: str = "handle_group_join_request"
+    description: str = (
+        "通过或拒绝一个加群请求。需要先调用 get_group_join_requests 工具获取"
+        "请求列表中的 flag，再用 flag 执行审批。approve=true 通过申请，"
+        "approve=false 拒绝申请（可附理由）。"
+    )
+    chat_type: ChatType = ChatType.GROUP
+
+    async def _feature_enabled(self, config: SnowLumaExtensionConfig) -> bool:
+        return config.join_request.enable
+
+    async def execute(
+        self,
+        flag: Annotated[str, "要处理的加群请求标识（来自 get_group_join_requests 返回的 flag 字段）"],
+        approve: Annotated[bool, "true=通过申请，false=拒绝申请"] = True,
+        reason: Annotated[str, "拒绝理由（仅拒绝时有效，可留空）"] = "",
+    ) -> tuple[bool, str]:
+        """执行加群请求审批。
+
+        Args:
+            flag: 加群请求标识
+            approve: 是否通过
+            reason: 拒绝理由
+
+        Returns:
+            tuple[bool, str]: (是否成功, 结果描述)
+        """
+        if not flag or not flag.strip():
+            return False, "flag 不能为空，请先调用 get_group_join_requests 获取有效的 flag。"
+
+        params: dict[str, Any] = {
+            "flag": flag.strip(),
+            "approve": bool(approve),
+        }
+        if not approve and reason:
+            params["reason"] = reason
+
+        ok, msg = await _call_snowluma_api(action_name="set_group_add_request", params=params)
+        if ok:
+            action_text = "通过" if approve else "拒绝"
+            return True, f"已{action_text}加群请求（flag={flag}）。"
+        return False, msg
 
 
 # ==============================================================================
@@ -208,8 +318,8 @@ class MuteGroupMemberAction(_SnowLumaBaseAction):
     )
     chat_type: ChatType = ChatType.GROUP
 
-    async def _feature_enabled(self, config: Any) -> bool:
-        return bool(getattr(getattr(config, "features", None), "enable_mute", False))
+    async def _feature_enabled(self, config: SnowLumaExtensionConfig) -> bool:
+        return config.features.enable_mute
 
     async def execute(
         self,
@@ -244,8 +354,8 @@ class UnmuteGroupMemberAction(_SnowLumaBaseAction):
     description: str = "在当前群聊中解除指定用户的禁言（duration=0）。"
     chat_type: ChatType = ChatType.GROUP
 
-    async def _feature_enabled(self, config: Any) -> bool:
-        return bool(getattr(getattr(config, "features", None), "enable_mute", False))
+    async def _feature_enabled(self, config: SnowLumaExtensionConfig) -> bool:
+        return config.features.enable_mute
 
     async def execute(
         self,
@@ -281,8 +391,8 @@ class ReactToMessageAction(_SnowLumaBaseAction):
     )
     chat_type: ChatType = ChatType.GROUP
 
-    async def _feature_enabled(self, config: Any) -> bool:
-        return bool(getattr(getattr(config, "features", None), "enable_react", False))
+    async def _feature_enabled(self, config: SnowLumaExtensionConfig) -> bool:
+        return config.features.enable_react
 
     @staticmethod
     def _resolve_emoji_id(raw_emoji: str) -> str | None:
@@ -290,8 +400,6 @@ class ReactToMessageAction(_SnowLumaBaseAction):
         raw_emoji = raw_emoji.strip()
         if raw_emoji.isdigit():
             return raw_emoji
-
-        from plugins.snowluma_adapter.src.event_models import QQ_FACE
 
         search_key = raw_emoji
         if not search_key.startswith("[表情："):
@@ -306,10 +414,6 @@ class ReactToMessageAction(_SnowLumaBaseAction):
         self,
         reactions: Annotated[str, "表情回应数组的 JSON 字符串。每项含 message_id 和 emoji_id"],
     ) -> tuple[bool, str]:
-        import asyncio
-        import random
-        import orjson
-
         # 解析 reactions JSON
         try:
             reaction_list = orjson.loads(reactions)
@@ -377,8 +481,8 @@ class PokeGroupMemberAction(_SnowLumaBaseAction):
     )
     chat_type: ChatType = ChatType.GROUP
 
-    async def _feature_enabled(self, config: Any) -> bool:
-        return bool(getattr(getattr(config, "features", None), "enable_poke", False))
+    async def _feature_enabled(self, config: SnowLumaExtensionConfig) -> bool:
+        return config.features.enable_poke
 
     async def execute(
         self,
@@ -386,8 +490,6 @@ class PokeGroupMemberAction(_SnowLumaBaseAction):
         times: Annotated[int, "每人戳的次数，默认1次"] = 1,
         interval: Annotated[float, "每次戳之间的间隔（秒），默认0.5秒"] = 0.5,
     ) -> tuple[bool, str]:
-        import asyncio
-
         group_id = _get_group_id_from_context(self)
         if not group_id:
             return False, "该动作只能在群聊上下文使用：未获取到 group_id。"
@@ -446,8 +548,8 @@ class RecallMessageAction(_SnowLumaBaseAction):
     )
     chat_type: ChatType = ChatType.ALL
 
-    async def _feature_enabled(self, config: Any) -> bool:
-        return bool(getattr(getattr(config, "features", None), "enable_recall", False))
+    async def _feature_enabled(self, config: SnowLumaExtensionConfig) -> bool:
+        return config.features.enable_recall
 
     async def execute(
         self,
@@ -470,8 +572,8 @@ class GroupSignAction(_SnowLumaBaseAction):
     description: str = "在当前群聊中执行群打卡。"
     chat_type: ChatType = ChatType.GROUP
 
-    async def _feature_enabled(self, config: Any) -> bool:
-        return bool(getattr(getattr(config, "features", None), "enable_group_sign", False))
+    async def _feature_enabled(self, config: SnowLumaExtensionConfig) -> bool:
+        return config.features.enable_group_sign
 
     async def execute(self) -> tuple[bool, str]:
         group_id = _get_group_id_from_context(self)
@@ -479,10 +581,6 @@ class GroupSignAction(_SnowLumaBaseAction):
             return False, "该动作只能在群聊上下文使用：未获取到 group_id。"
 
         # 检查今天是否已打过卡
-        from datetime import datetime
-
-        from src.app.plugin_system.api import storage_api
-
         today_str = datetime.now().strftime("%Y-%m-%d")
         try:
             record = await storage_api.load_json("snowluma_extension", "sign_record")
@@ -514,8 +612,8 @@ class KickGroupMemberAction(_SnowLumaBaseAction):
     )
     chat_type: ChatType = ChatType.GROUP
 
-    async def _feature_enabled(self, config: Any) -> bool:
-        return bool(getattr(getattr(config, "features", None), "enable_kick", False))
+    async def _feature_enabled(self, config: SnowLumaExtensionConfig) -> bool:
+        return config.features.enable_kick
 
     async def execute(
         self,
@@ -540,7 +638,7 @@ class KickGroupMemberAction(_SnowLumaBaseAction):
 
 
 # ==============================================================================
-# 新增的 SnowLuma 特有管理 Action
+# SnowLuma 特有管理 Action
 # ==============================================================================
 
 class SetGroupNameAction(_SnowLumaBaseAction):
@@ -552,8 +650,8 @@ class SetGroupNameAction(_SnowLumaBaseAction):
     )
     chat_type: ChatType = ChatType.GROUP
 
-    async def _feature_enabled(self, config: Any) -> bool:
-        return bool(getattr(getattr(config, "features", None), "enable_set_group_name", False))
+    async def _feature_enabled(self, config: SnowLumaExtensionConfig) -> bool:
+        return config.features.enable_set_group_name
 
     async def execute(
         self,
@@ -584,8 +682,8 @@ class SetGroupCardAction(_SnowLumaBaseAction):
     )
     chat_type: ChatType = ChatType.GROUP
 
-    async def _feature_enabled(self, config: Any) -> bool:
-        return bool(getattr(getattr(config, "features", None), "enable_set_group_card", False))
+    async def _feature_enabled(self, config: SnowLumaExtensionConfig) -> bool:
+        return config.features.enable_set_group_card
 
     async def execute(
         self,
@@ -618,8 +716,8 @@ class SetGroupSpecialTitleAction(_SnowLumaBaseAction):
     )
     chat_type: ChatType = ChatType.GROUP
 
-    async def _feature_enabled(self, config: Any) -> bool:
-        return bool(getattr(getattr(config, "features", None), "enable_set_group_special_title", False))
+    async def _feature_enabled(self, config: SnowLumaExtensionConfig) -> bool:
+        return config.features.enable_set_group_special_title
 
     async def execute(
         self,
@@ -656,8 +754,8 @@ class SendGroupNoticeAction(_SnowLumaBaseAction):
     )
     chat_type: ChatType = ChatType.GROUP
 
-    async def _feature_enabled(self, config: Any) -> bool:
-        return bool(getattr(getattr(config, "features", None), "enable_send_group_notice", False))
+    async def _feature_enabled(self, config: SnowLumaExtensionConfig) -> bool:
+        return config.features.enable_send_group_notice
 
     async def execute(
         self,
@@ -707,8 +805,8 @@ class DeleteGroupNoticeAction(_SnowLumaBaseAction):
     )
     chat_type: ChatType = ChatType.GROUP
 
-    async def _feature_enabled(self, config: Any) -> bool:
-        return bool(getattr(getattr(config, "features", None), "enable_delete_group_notice", False))
+    async def _feature_enabled(self, config: SnowLumaExtensionConfig) -> bool:
+        return config.features.enable_delete_group_notice
 
     async def execute(
         self,
@@ -743,15 +841,13 @@ class SendGroupForwardMsgAction(_SnowLumaBaseAction):
     )
     chat_type: ChatType = ChatType.GROUP
 
-    async def _feature_enabled(self, config: Any) -> bool:
-        return bool(getattr(getattr(config, "features", None), "enable_send_forward_msg", False))
+    async def _feature_enabled(self, config: SnowLumaExtensionConfig) -> bool:
+        return config.features.enable_send_forward_msg
 
     async def execute(
         self,
         messages: Annotated[str, "转发消息节点数组的 JSON 字符串。每个节点包含 nickname（昵称）、user_id（QQ号）、content（消息段数组）"],
     ) -> tuple[bool, str]:
-        import orjson
-
         group_id = _get_group_id_from_context(self)
         if not group_id:
             return False, "该动作只能在群聊上下文使用：未获取到 group_id。"
@@ -786,8 +882,8 @@ class SetEssenceMsgAction(_SnowLumaBaseAction):
     )
     chat_type: ChatType = ChatType.GROUP
 
-    async def _feature_enabled(self, config: Any) -> bool:
-        return bool(getattr(getattr(config, "features", None), "enable_essence_msg", False))
+    async def _feature_enabled(self, config: SnowLumaExtensionConfig) -> bool:
+        return config.features.enable_essence_msg
 
     async def execute(
         self,
@@ -813,8 +909,8 @@ class DeleteEssenceMsgAction(_SnowLumaBaseAction):
     )
     chat_type: ChatType = ChatType.GROUP
 
-    async def _feature_enabled(self, config: Any) -> bool:
-        return bool(getattr(getattr(config, "features", None), "enable_essence_msg", False))
+    async def _feature_enabled(self, config: SnowLumaExtensionConfig) -> bool:
+        return config.features.enable_essence_msg
 
     async def execute(
         self,
@@ -841,8 +937,8 @@ class ForwardGroupSingleMsgAction(_SnowLumaBaseAction):
     )
     chat_type: ChatType = ChatType.ALL
 
-    async def _feature_enabled(self, config: Any) -> bool:
-        return bool(getattr(getattr(config, "features", None), "enable_send_forward_msg", False))
+    async def _feature_enabled(self, config: SnowLumaExtensionConfig) -> bool:
+        return config.features.enable_send_forward_msg
 
     async def execute(
         self,
@@ -871,8 +967,8 @@ class ForwardFriendSingleMsgAction(_SnowLumaBaseAction):
     )
     chat_type: ChatType = ChatType.ALL
 
-    async def _feature_enabled(self, config: Any) -> bool:
-        return bool(getattr(getattr(config, "features", None), "enable_send_forward_msg", False))
+    async def _feature_enabled(self, config: SnowLumaExtensionConfig) -> bool:
+        return config.features.enable_send_forward_msg
 
     async def execute(
         self,
@@ -902,23 +998,16 @@ class SendLikeAction(_SnowLumaBaseAction):
     chat_type: ChatType = ChatType.ALL
     associated_types: list[str] = ["text"]
 
-    async def _feature_enabled(self, config: Any) -> bool:
-        return bool(getattr(getattr(config, "features", None), "enable_send_like", False))
+    async def _feature_enabled(self, config: SnowLumaExtensionConfig) -> bool:
+        return config.features.enable_send_like
 
     async def execute(
         self,
         user_id: Annotated[str, "要点赞的目标 QQ 号"],
     ) -> tuple[bool, str]:
         # 从配置读取点赞数
-        times = 10
-        try:
-            from src.core.managers import get_plugin_manager
-
-            plugin = get_plugin_manager().get_plugin("snowluma_extension")
-            if plugin and plugin.config:
-                times = int(getattr(getattr(plugin.config, "features", None), "send_like_times", 10))
-        except Exception:
-            pass
+        config = cast(SnowLumaExtensionConfig | None, self.plugin.config)
+        times = config.features.send_like_times if config is not None else 10
 
         params = {
             "user_id": _coerce_int_if_digit(user_id),
@@ -943,8 +1032,8 @@ class SetGroupWholeBanAction(_SnowLumaBaseAction):
     )
     chat_type: ChatType = ChatType.GROUP
 
-    async def _feature_enabled(self, config: Any) -> bool:
-        return bool(getattr(getattr(config, "features", None), "enable_set_group_whole_ban", False))
+    async def _feature_enabled(self, config: SnowLumaExtensionConfig) -> bool:
+        return config.features.enable_set_group_whole_ban
 
     async def execute(
         self,
@@ -966,12 +1055,8 @@ class SetGroupWholeBanAction(_SnowLumaBaseAction):
         if ok:
             if enable and duration_seconds > 0:
                 # 注册延迟任务自动关闭全群禁言（内存态，重启后失效）
-                from src.kernel.concurrency import get_task_manager
-
                 async def _auto_unban() -> None:
                     """延迟后自动关闭全群禁言。"""
-                    import asyncio
-
                     await asyncio.sleep(duration_seconds)
                     unban_params = {"group_id": gid, "enable": False}
                     unban_ok, unban_msg = await _call_snowluma_api(
@@ -1013,8 +1098,8 @@ class SendShareCardAction(_SnowLumaBaseAction):
     )
     chat_type: ChatType = ChatType.ALL
 
-    async def _feature_enabled(self, config: Any) -> bool:
-        return bool(getattr(getattr(config, "features", None), "enable_send_share_card", True))
+    async def _feature_enabled(self, config: SnowLumaExtensionConfig) -> bool:
+        return config.features.enable_send_share_card
 
     async def execute(
         self,
@@ -1090,6 +1175,7 @@ class SendShareCardAction(_SnowLumaBaseAction):
 
 __all__ = [
     "MuteGroupMemberAction",
+    "HandleGroupJoinRequestAction",
     "UnmuteGroupMemberAction",
     "ReactToMessageAction",
     "PokeGroupMemberAction",

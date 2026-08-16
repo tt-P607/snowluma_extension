@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from src.core.components.base.config import BaseConfig, Field, SectionBase, config_section
+from src.app.plugin_system.base import BaseConfig, Field, SectionBase, config_section
 
 
 class SnowLumaExtensionConfig(BaseConfig):
@@ -110,10 +110,32 @@ class SnowLumaExtensionConfig(BaseConfig):
             description="群与群之间打卡的最大随机抖动（秒）",
         )
 
+    @config_section("join_request")
+    class JoinRequestSection(SectionBase):
+        """加群请求审批管理配置。
+
+        启用后提供通过/拒绝加群申请的 Action 与查询待审批列表的 Tool。
+        """
+
+        enable: bool = Field(
+            default=False,
+            description="是否启用加群请求审批管理功能（审批 Action 与查询 Tool）",
+        )
+        error_hint: str = Field(
+            default=(
+                "【入群审核规则】1. QQ等级必须高于20级；"
+                "2. 验证留言必须明确说明入群意图或按要求作答；"
+                "3. 遇到广告、推销或回答与问题无关、莫名其妙的直接拒绝；"
+                "4. 如果通过沟通确认是正常的真人，但QQ等级不达标，可以酌情考虑通过。"
+            ),
+            description="注入给 LLM 的入群审核规则提示词，可按需自定义",
+        )
+
     plugin: PluginSection = Field(default_factory=PluginSection)
     features: FeaturesSection = Field(default_factory=FeaturesSection)
     bot_role: BotRoleSection = Field(default_factory=BotRoleSection)
     scheduled_sign: ScheduledSignSection = Field(default_factory=ScheduledSignSection)
+    join_request: JoinRequestSection = Field(default_factory=JoinRequestSection)
 
 
 __all__ = ["SnowLumaExtensionConfig"]

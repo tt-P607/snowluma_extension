@@ -9,14 +9,132 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Any
 
-from src.app.plugin_system.api import adapter_api
+from src.app.plugin_system.api import adapter_api, stream_api
 from src.app.plugin_system.api.log_api import get_logger
-from src.core.components.base.tool import BaseTool
-from src.core.components.types import ChatType
+from src.app.plugin_system.base import BaseTool
+from src.app.plugin_system.types import ChatType
 
-from .actions import _coerce_int_if_digit, _format_snowluma_failure, _get_error_hint, _SNOWLUMA_ADAPTER_SIGNATURE
+from .actions import (
+    _call_snowluma_api_with_data,
+    _coerce_int_if_digit,
+)
+from .qq_faces import QQ_FACE
 
 logger = get_logger("snowluma_extension")
+
+
+class GetGroupJoinRequestsTool(BaseTool):
+    """查询加群请求列表。"""
+
+    name: str = "get_group_join_requests"
+    description: str = (
+        "查询当前群待审批的加群请求列表。"
+        "返回每个请求的申请人QQ号、昵称、申请时间、QQ等级、性别、年龄、个性签名、"
+        "验证留言、请求标识(flag)。"
+        "默认只返回待审批的请求；传入 include_all=true 可查看全部历史请求。"
+        "flag 用于后续调用 handle_group_join_request 通过或拒绝。"
+    )
+    chat_type: ChatType = ChatType.GROUP
+    associated_platforms: list[str] = ["qq"]
+
+    async def execute(
+        self,
+        include_all: Annotated[bool, "是否包含已处理的请求（true=查看全部历史，false=仅待审批）"] = False,
+    ) -> tuple[bool, str]:
+        """执行加群请求列表查询。
+
+        Args:
+            include_all: 为 True 时包含已处理的请求
+
+        Returns:
+            tuple[bool, str]: (是否成功, 格式化的请求列表文本)
+        """
+        group_id = _get_group_id_from_context_tool(self)
+        if not group_id:
+            return False, "该工具只能在群聊上下文使用：未获取到 group_id。"
+
+        params: dict[str, Any] = {
+            "group_id": _coerce_int_if_digit(group_id),
+            "only_pending": not bool(include_all),
+        }
+
+        ok, msg, data = await _call_snowluma_api_with_data(
+            action_name="get_group_system_msg",
+            params=params,
+        )
+        if not ok:
+            return False, msg
+
+        requests = data if isinstance(data, list) else []
+        if not requests:
+            return True, "当前群没有待审批的加群请求。"
+
+        # get_group_system_msg 的 requester_uin 为 0、nick 为空，
+        # 用 get_group_ignored_notifies 补充真实申请人信息
+        detail_map: dict[str, dict[str, Any]] = {}
+        ok2, _, detail_data = await _call_snowluma_api_with_data(
+            action_name="get_group_ignored_notifies",
+            params={},
+        )
+        if ok2 and isinstance(detail_data, list):
+            for item in detail_data:
+                flag = str(item.get("flag", ""))
+                if flag:
+                    detail_map[flag] = item
+
+        lines: list[str] = [f"本群共有 {len(requests)} 条加群请求：\n"]
+        for i, req in enumerate(requests, 1):
+            flag = str(req.get("flag", ""))
+            detail = detail_map.get(flag, {})
+            # 合并真实申请人信息
+            requester_uin = detail.get("requester_uin") or req.get("requester_uin", "未知")
+            requester_nick = detail.get("requester_nick") or req.get("requester_nick", "未知用户")
+            message = req.get("message", "")
+            checked = req.get("checked", False)
+            request_id = req.get("request_id", 0)
+            # request_id 为微秒级时间戳，转成可读的申请时间
+            time_str = ""
+            if request_id:
+                try:
+                    time_str = datetime.fromtimestamp(int(request_id) / 1_000_000).strftime("%Y-%m-%d %H:%M:%S")
+                except (ValueError, TypeError, OSError, OverflowError):
+                    time_str = ""
+
+            line = f"{i}. 申请人：{requester_nick}({requester_uin})"
+            if time_str:
+                line += f"\n   申请时间：{time_str}"
+
+            # 用 get_stranger_info 补充申请人 QQ 等级/性别/年龄/个性签名
+            if requester_uin not in ("", "0", "未知"):
+                try:
+                    ok3, _, stranger = await _call_snowluma_api_with_data(
+                        action_name="get_stranger_info",
+                        params={"user_id": _coerce_int_if_digit(requester_uin)},
+                    )
+                    if ok3 and isinstance(stranger, dict):
+                        if stranger.get("qq_level"):
+                            line += f"\n   QQ等级：{stranger['qq_level']}"
+                        sex = stranger.get("sex")
+                        if sex == "male":
+                            line += "\n   性别：男"
+                        elif sex == "female":
+                            line += "\n   性别：女"
+                        if stranger.get("age"):
+                            line += f"\n   年龄：{stranger['age']}"
+                        if stranger.get("long_nick"):
+                            line += f"\n   个性签名：{stranger['long_nick']}"
+                except Exception as exc:
+                    logger.debug(f"获取申请人 {requester_uin} 资料失败：{exc}")
+
+            if not bool(include_all) and checked:
+                line += "\n   [已处理]"
+            if message:
+                line += f"\n   验证留言：{message}"
+            line += f"\n   flag：{flag}"
+            lines.append(line)
+
+        logger.info(f"查询加群请求列表成功，群 {group_id} 共 {len(requests)} 条")
+        return True, "\n\n".join(lines)
 
 
 class GetGroupMemberInfoTool(BaseTool):
@@ -48,30 +166,13 @@ class GetGroupMemberInfoTool(BaseTool):
             "no_cache": bool(no_cache),
         }
 
-        adapter = adapter_api.get_adapter(_SNOWLUMA_ADAPTER_SIGNATURE)
-        if adapter is None:
-            return False, "snowluma_adapter 未启动：请先启用并启动 snowluma_adapter 插件。"
-
-        if not hasattr(adapter, "send_snowluma_api"):
-            return False, "snowluma_adapter 不支持 send_snowluma_api：请确认 snowluma_adapter 版本兼容。"
-
-        logger.debug(f"调用 SnowLuma API: action=get_group_member_info, params={params}")
-
-        try:
-            resp = await adapter.send_snowluma_api("get_group_member_info", params, timeout=30.0)  # type: ignore[attr-defined]
-        except Exception as exc:
-            logger.error(f"SnowLuma API 调用异常: action=get_group_member_info, error={exc}")
-            return False, f"调用 SnowLuma API 异常：{exc}"
-
-        logger.debug(f"SnowLuma API 响应: action=get_group_member_info, resp={resp}")
-
-        status = str(resp.get("status") or "").strip().lower()
-        retcode = resp.get("retcode")
-        if status != "ok" or (retcode != 0 and retcode is not None):
-            logger.warning(f"SnowLuma API 调用失败: action=get_group_member_info, status={status}, retcode={retcode}")
-            return False, _format_snowluma_failure("get_group_member_info", resp, _get_error_hint())
-
-        data = resp.get("data") or {}
+        ok, msg, data = await _call_snowluma_api_with_data(
+            action_name="get_group_member_info",
+            params=params,
+        )
+        if not ok:
+            return False, msg
+        data = data if isinstance(data, dict) else {}
 
         role_map = {"owner": "群主", "admin": "管理员", "member": "普通成员"}
         sex_map = {"male": "男", "female": "女", "unknown": "未知"}
@@ -197,34 +298,16 @@ class GetGroupNoticeTool(BaseTool):
             "group_id": _coerce_int_if_digit(group_id),
         }
 
-        adapter = adapter_api.get_adapter(_SNOWLUMA_ADAPTER_SIGNATURE)
-        if adapter is None:
-            return False, "snowluma_adapter 未启动：请先启用并启动 snowluma_adapter 插件。"
+        ok, msg, data = await _call_snowluma_api_with_data(
+            action_name="_get_group_notice",
+            params=params,
+        )
+        if not ok:
+            return False, msg
 
-        if not hasattr(adapter, "send_snowluma_api"):
-            return False, "snowluma_adapter 不支持 send_snowluma_api"
-
-        logger.debug(f"调用 SnowLuma API: action=_get_group_notice, params={params}")
-
-        try:
-            resp = await adapter.send_snowluma_api("_get_group_notice", params, timeout=30.0)  # type: ignore[attr-defined]
-        except Exception as exc:
-            logger.error(f"SnowLuma API 调用异常: action=_get_group_notice, error={exc}")
-            return False, f"调用 SnowLuma API 异常：{exc}"
-
-        logger.debug(f"SnowLuma API 响应: action=_get_group_notice, resp={resp}")
-
-        status = str(resp.get("status") or "").strip().lower()
-        retcode = resp.get("retcode")
-        if status != "ok" or (retcode != 0 and retcode is not None):
-            logger.warning(f"SnowLuma API 调用失败: action=_get_group_notice, status={status}, retcode={retcode}")
-            return False, _format_snowluma_failure("_get_group_notice", resp, _get_error_hint())
-
-        notices = resp.get("data") or []
+        notices = data if isinstance(data, list) else []
         if not notices:
             return True, "当前群聊没有群公告。"
-
-        from datetime import datetime
 
         type_names = {0: "普通公告", 1: "弹窗推送", 2: "新成员推送", 3: "改名引导"}
 
@@ -283,8 +366,6 @@ class GetQQFaceListTool(BaseTool):
 
     async def execute(self) -> tuple[bool, str]:
         """返回完整的 QQ 表情映射表。"""
-        from plugins.snowluma_adapter.src.event_models import QQ_FACE
-
         lines: list[str] = ["QQ 表情列表（ID: 名称）：", ""]
         for face_id, face_name in QQ_FACE.items():
             # face_name 格式: "[表情：赞]"，提取中间名称
@@ -322,33 +403,25 @@ class GetEssenceMsgListTool(BaseTool):
 
         params = {"group_id": _coerce_int_if_digit(group_id)}
 
-        adapter = adapter_api.get_adapter(_SNOWLUMA_ADAPTER_SIGNATURE)
-        if adapter is None:
-            return False, "snowluma_adapter 未启动。"
-        if not hasattr(adapter, "send_snowluma_api"):
-            return False, "snowluma_adapter 不支持 send_snowluma_api。"
+        ok, msg, data = await _call_snowluma_api_with_data(
+            action_name="get_essence_msg_list",
+            params=params,
+        )
+        if not ok:
+            return False, msg
 
-        try:
-            resp = await adapter.send_snowluma_api("get_essence_msg_list", params, timeout=30.0)  # type: ignore[attr-defined]
-        except Exception as exc:
-            logger.error(f"获取精华消息列表失败: {exc}")
-            return False, f"获取精华消息列表异常：{exc}"
-
-        data = resp.get("data") if isinstance(resp, dict) else None
-        if not data or not isinstance(data, dict):
-            return False, "获取精华消息列表失败：返回数据为空。"
-
+        data = data if isinstance(data, dict) else {}
         msg_list = data.get("essence_list") or data.get("messages") or []
         if not msg_list:
             return True, "当前群没有精华消息。"
 
         lines: list[str] = [f"群精华消息列表（共 {len(msg_list)} 条）："]
-        for i, msg in enumerate(msg_list, 1):
-            msg_id = msg.get("message_id", "")
-            sender_uid = msg.get("sender_id") or msg.get("user_id", "")
-            sender_nick = msg.get("sender_nick") or msg.get("nickname", "")
-            msg_time = msg.get("sender_time") or msg.get("time", "")
-            content = msg.get("content") or msg.get("raw_message", "")
+        for i, msg_item in enumerate(msg_list, 1):
+            msg_id = msg_item.get("message_id", "")
+            sender_uid = msg_item.get("sender_id") or msg_item.get("user_id", "")
+            sender_nick = msg_item.get("sender_nick") or msg_item.get("nickname", "")
+            msg_time = msg_item.get("sender_time") or msg_item.get("time", "")
+            content = msg_item.get("content") or msg_item.get("raw_message", "")
             if msg_time:
                 try:
                     time_str = datetime.fromtimestamp(int(msg_time)).strftime("%Y-%m-%d %H:%M:%S")
@@ -389,20 +462,15 @@ class GetGroupHonorInfoTool(BaseTool):
             "type": "all",
         }
 
-        adapter = adapter_api.get_adapter(_SNOWLUMA_ADAPTER_SIGNATURE)
-        if adapter is None:
-            return False, "snowluma_adapter 未启动。"
-        if not hasattr(adapter, "send_snowluma_api"):
-            return False, "snowluma_adapter 不支持 send_snowluma_api。"
+        ok, msg, data = await _call_snowluma_api_with_data(
+            action_name="get_group_honor_info",
+            params=params,
+        )
+        if not ok:
+            return False, msg
 
-        try:
-            resp = await adapter.send_snowluma_api("get_group_honor_info", params, timeout=30.0)  # type: ignore[attr-defined]
-        except Exception as exc:
-            logger.error(f"获取群荣誉信息失败: {exc}")
-            return False, f"获取群荣誉信息异常：{exc}"
-
-        data = resp.get("data") if isinstance(resp, dict) else None
-        if not data or not isinstance(data, dict):
+        data = data if isinstance(data, dict) else {}
+        if not data:
             return False, "获取群荣誉信息失败：返回数据为空。"
 
         lines: list[str] = []
@@ -466,19 +534,13 @@ class GetGroupShutListTool(BaseTool):
 
         params = {"group_id": _coerce_int_if_digit(group_id)}
 
-        adapter = adapter_api.get_adapter(_SNOWLUMA_ADAPTER_SIGNATURE)
-        if adapter is None:
-            return False, "snowluma_adapter 未启动。"
-        if not hasattr(adapter, "send_snowluma_api"):
-            return False, "snowluma_adapter 不支持 send_snowluma_api。"
+        ok, msg, data = await _call_snowluma_api_with_data(
+            action_name="get_group_shut_list",
+            params=params,
+        )
+        if not ok:
+            return False, msg
 
-        try:
-            resp = await adapter.send_snowluma_api("get_group_shut_list", params, timeout=30.0)  # type: ignore[attr-defined]
-        except Exception as exc:
-            logger.error(f"获取群禁言列表失败: {exc}")
-            return False, f"获取群禁言列表异常：{exc}"
-
-        data = resp.get("data") if isinstance(resp, dict) else None
         if not data:
             return True, "当前群没有禁言中的成员。"
 
@@ -529,24 +591,14 @@ class GetGroupInfoTool(BaseTool):
             "no_cache": bool(no_cache),
         }
 
-        adapter = adapter_api.get_adapter(_SNOWLUMA_ADAPTER_SIGNATURE)
-        if adapter is None:
-            return False, "snowluma_adapter 未启动。"
-        if not hasattr(adapter, "send_snowluma_api"):
-            return False, "snowluma_adapter 不支持 send_snowluma_api。"
+        ok, msg, data = await _call_snowluma_api_with_data(
+            action_name="get_group_info",
+            params=params,
+        )
+        if not ok:
+            return False, msg
 
-        try:
-            resp = await adapter.send_snowluma_api("get_group_info", params, timeout=30.0)  # type: ignore[attr-defined]
-        except Exception as exc:
-            logger.error(f"获取群信息失败: {exc}")
-            return False, f"获取群信息异常：{exc}"
-
-        status = str(resp.get("status") or "").strip().lower()
-        retcode = resp.get("retcode")
-        if status != "ok" or (retcode != 0 and retcode is not None):
-            return False, _format_snowluma_failure("get_group_info", resp, _get_error_hint())
-
-        data = resp.get("data") or {}
+        data = data if isinstance(data, dict) else {}
 
         group_name = data.get("group_name", "未知")
         member_count = data.get("member_count", 0)
@@ -603,24 +655,15 @@ class GetGroupMemberListTool(BaseTool):
             "no_cache": bool(no_cache),
         }
 
-        adapter = adapter_api.get_adapter(_SNOWLUMA_ADAPTER_SIGNATURE)
-        if adapter is None:
-            return False, "snowluma_adapter 未启动。"
-        if not hasattr(adapter, "send_snowluma_api"):
-            return False, "snowluma_adapter 不支持 send_snowluma_api。"
+        ok, msg, data = await _call_snowluma_api_with_data(
+            action_name="get_group_member_list",
+            params=params,
+            timeout=60.0,
+        )
+        if not ok:
+            return False, msg
 
-        try:
-            resp = await adapter.send_snowluma_api("get_group_member_list", params, timeout=60.0)  # type: ignore[attr-defined]
-        except Exception as exc:
-            logger.error(f"获取群成员列表失败: {exc}")
-            return False, f"获取群成员列表异常：{exc}"
-
-        status = str(resp.get("status") or "").strip().lower()
-        retcode = resp.get("retcode")
-        if status != "ok" or (retcode != 0 and retcode is not None):
-            return False, _format_snowluma_failure("get_group_member_list", resp, _get_error_hint())
-
-        members = resp.get("data") or []
+        members = data if isinstance(data, list) else []
         if not members:
             return True, "当前群没有成员数据。"
 
@@ -679,13 +722,11 @@ class GetBotMessagesTool(BaseTool):
         self,
         count: Annotated[int, "查询的消息数量，默认5条，最大20条"] = 5,
     ) -> tuple[bool, str]:
-        from src.core.managers.stream_manager import get_stream_manager
-
         stream_id = self.get_current_stream_id()
         if not stream_id:
             return False, "无法获取当前聊天流 ID。"
 
-        chat_stream = get_stream_manager()._streams.get(stream_id)  # noqa: SLF001
+        chat_stream = await stream_api.get_stream(stream_id)
         if chat_stream is None:
             return False, "当前聊天流不存在，无法查询历史消息。"
 
@@ -716,15 +757,13 @@ class GetBotMessagesTool(BaseTool):
             # 时间格式化
             time_str = ""
             try:
-                from datetime import datetime as _dt
-
                 if isinstance(msg.time, (int, float)):
                     ts = float(msg.time)
-                elif isinstance(msg.time, _dt):
+                elif isinstance(msg.time, datetime):
                     ts = msg.time.timestamp()
                 else:
                     ts = 0.0
-                time_str = _dt.fromtimestamp(ts).strftime("%H:%M:%S")
+                time_str = datetime.fromtimestamp(ts).strftime("%H:%M:%S")
             except (ValueError, TypeError, OSError):
                 time_str = "未知时间"
 
@@ -736,6 +775,7 @@ class GetBotMessagesTool(BaseTool):
 
 
 __all__ = [
+    "GetGroupJoinRequestsTool",
     "GetGroupMemberInfoTool",
     "GetGroupNoticeTool",
     "GetQQFaceListTool",

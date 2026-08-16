@@ -5,19 +5,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import random
 from datetime import datetime, timedelta
 from typing import cast
 
 from src.app.plugin_system.api import adapter_api, storage_api
-from src.core.components.types import EventType
-from src.kernel.event import EventDecision, get_event_bus
-from src.kernel.concurrency import get_task_manager
-from src.kernel.scheduler import TriggerType, get_unified_scheduler
-
 from src.app.plugin_system.api.log_api import get_logger
-from src.core.components.base import BasePlugin
-from src.core.components.loader import register_plugin
+from src.app.plugin_system.base import BasePlugin, register_plugin
+from src.app.plugin_system.types import EventType
+from src.kernel.concurrency import get_task_manager
+from src.kernel.event import EventDecision, get_event_bus
+from src.kernel.scheduler import TriggerType, get_unified_scheduler
 
 from .config import SnowLumaExtensionConfig
 from .src.actions import (
@@ -26,6 +25,7 @@ from .src.actions import (
     ForwardFriendSingleMsgAction,
     ForwardGroupSingleMsgAction,
     GroupSignAction,
+    HandleGroupJoinRequestAction,
     KickGroupMemberAction,
     MuteGroupMemberAction,
     PokeGroupMemberAction,
@@ -49,6 +49,7 @@ from .src.tools import (
     GetEssenceMsgListTool,
     GetGroupHonorInfoTool,
     GetGroupInfoTool,
+    GetGroupJoinRequestsTool,
     GetGroupMemberInfoTool,
     GetGroupMemberListTool,
     GetGroupNoticeTool,
@@ -57,6 +58,8 @@ from .src.tools import (
 )
 
 logger = get_logger("snowluma_extension")
+
+_SNOWLUMA_ADAPTER_SIGNATURE = "snowluma_adapter:adapter:snowluma_adapter"
 
 
 @register_plugin
@@ -102,25 +105,28 @@ class SnowLumaExtensionPlugin(BasePlugin):
             BotRoleReminderHandler,
         ]
 
+        # 加群请求审批（按配置开关注册）
+        if config.join_request.enable:
+            components.append(HandleGroupJoinRequestAction)
+            components.append(GetGroupJoinRequestsTool)
+
         # Tool 组件按需注册
-        if self.config:
-            config = cast(SnowLumaExtensionConfig, self.config)
-            if config.features.enable_get_group_member_info:
-                components.append(GetGroupMemberInfoTool)
-                components.append(GetGroupInfoTool)
-                components.append(GetGroupMemberListTool)
-            if config.features.enable_get_group_notice:
-                components.append(GetGroupNoticeTool)
-            if config.features.enable_react:
-                components.append(GetQQFaceListTool)
-            if config.features.enable_get_essence_msg:
-                components.append(GetEssenceMsgListTool)
-            if config.features.enable_get_group_honor:
-                components.append(GetGroupHonorInfoTool)
-            if config.features.enable_mute:
-                components.append(GetGroupShutListTool)
-            if config.features.enable_recall:
-                components.append(GetBotMessagesTool)
+        if config.features.enable_get_group_member_info:
+            components.append(GetGroupMemberInfoTool)
+            components.append(GetGroupInfoTool)
+            components.append(GetGroupMemberListTool)
+        if config.features.enable_get_group_notice:
+            components.append(GetGroupNoticeTool)
+        if config.features.enable_react:
+            components.append(GetQQFaceListTool)
+        if config.features.enable_get_essence_msg:
+            components.append(GetEssenceMsgListTool)
+        if config.features.enable_get_group_honor:
+            components.append(GetGroupHonorInfoTool)
+        if config.features.enable_mute:
+            components.append(GetGroupShutListTool)
+        if config.features.enable_recall:
+            components.append(GetBotMessagesTool)
 
         return components
 
@@ -141,7 +147,7 @@ class SnowLumaExtensionPlugin(BasePlugin):
             async def _on_start_callback(
                 event_name: str, params: dict[str, object]
             ) -> tuple[EventDecision, dict[str, object]]:
-                """ON_START 回调：调度器已就绪，注册定时打卡并检查补打。"""
+                """ON_START 回调：注册定时打卡并检查补打。"""
                 await self._setup_scheduled_sign()
                 return EventDecision.SUCCESS, params
 
@@ -151,16 +157,9 @@ class SnowLumaExtensionPlugin(BasePlugin):
     async def _setup_scheduled_sign(self) -> None:
         """注册定时群打卡调度任务。
 
-        使用一次性 ``delay_seconds`` 任务 + 回调内延迟自重注册模式。
-
-        调度器 ``_check_time_trigger`` 在 ``is_recurring=True`` 且 config 含
-        ``interval_seconds`` 时会忽略 ``trigger_at``，导致首次触发时间为
-        ``created_at + interval_seconds`` 而非配置的目标时间。
-        因此这里改为注册一次性延迟任务，每次回调完成后重新注册下一天的
-        延迟任务，保证触发时间始终对齐目标。
+        使用一次性 ``delay_seconds`` 延迟任务，每次打卡完成后延迟重新注册
+        下一天的延迟任务，使触发时间对齐配置的目标时刻。
         """
-        import asyncio
-
         sign_config = self.config.scheduled_sign  # type: ignore[union-attr]
 
         if not sign_config.group_ids:
@@ -181,8 +180,6 @@ class SnowLumaExtensionPlugin(BasePlugin):
         jitter_min = max(0, sign_config.jitter_min_seconds)
         jitter_max = max(jitter_min, sign_config.jitter_max_seconds)
         task_name = "snowluma_extension_scheduled_sign"
-
-        # ── 内部工具函数 ──
 
         def _calc_delay() -> tuple[float, datetime]:
             """计算到下一个目标时刻（HH:MM）的秒数及目标 datetime。"""
@@ -218,9 +215,8 @@ class SnowLumaExtensionPlugin(BasePlugin):
         async def _schedule_next_deferred() -> None:
             """延迟 5 秒后注册下一次打卡。
 
-            当前任务是一次性的，回调结束后调度器会清理它。
-            延迟确保旧任务从 ``_tasks_by_name`` 中移除后再注册同名新任务，
-            避免 ``force_overwrite`` 取消正在执行的自身 asyncio Task。
+            当前任务是一次性的，回调结束后调度器会清理它。延迟确保旧任务
+            从调度器中移除后再注册同名新任务，避免覆盖正在执行的自身任务。
             """
 
             async def _inner() -> None:
@@ -249,9 +245,7 @@ class SnowLumaExtensionPlugin(BasePlugin):
             except Exception:
                 pass
 
-            adapter = adapter_api.get_adapter(
-                "snowluma_adapter:adapter:snowluma_adapter"
-            )
+            adapter = adapter_api.get_adapter(_SNOWLUMA_ADAPTER_SIGNATURE)
             if adapter is None:
                 logger.warning("定时打卡失败：snowluma_adapter 未启动")
                 await _schedule_next_deferred()
@@ -281,18 +275,15 @@ class SnowLumaExtensionPlugin(BasePlugin):
             except Exception:
                 pass
 
-            # 延迟注册下一次
             await _schedule_next_deferred()
-
-        # ── 启动时检查补打 ──
 
         now = datetime.now()
         today_sign_dt = now.replace(
             hour=hour, minute=minute, second=0, microsecond=0
         )
 
+        # 今天打卡时间已过，检查是否需要补打
         if today_sign_dt <= now:
-            # 今天打卡时间已过，检查是否需要补打
             today_str = now.strftime("%Y-%m-%d")
             need_catch_up = True
             try:
@@ -327,9 +318,7 @@ class SnowLumaExtensionPlugin(BasePlugin):
                     except Exception:
                         pass
 
-                    adapter = adapter_api.get_adapter(
-                        "snowluma_adapter:adapter:snowluma_adapter"
-                    )
+                    adapter = adapter_api.get_adapter(_SNOWLUMA_ADAPTER_SIGNATURE)
                     if adapter is None:
                         logger.warning("补打失败：snowluma_adapter 未启动")
                         return

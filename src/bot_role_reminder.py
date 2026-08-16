@@ -13,12 +13,13 @@ from typing import Any
 
 from src.app.plugin_system.api import adapter_api, prompt_api
 from src.app.plugin_system.api.log_api import get_logger
-from src.core.components.base.event_handler import BaseEventHandler
-from src.core.components.types import EventType
-from src.core.models.message import Message
-from src.core.prompt import SystemReminderBucket, SystemReminderInsertType
+from src.app.plugin_system.base import BaseEventHandler
+from src.app.plugin_system.types import EventType, Message, SystemReminderBucket
+from src.core.prompt import SystemReminderInsertType
 from src.kernel.concurrency import get_task_manager
 from src.kernel.event import EventDecision
+
+from .actions import _coerce_int_if_digit
 
 logger = get_logger("snowluma_extension")
 
@@ -100,21 +101,6 @@ def _mark_refreshed(group_id: str) -> None:
     """
 
     _refreshed_at[str(group_id)] = time.time()
-
-
-def _coerce_int_if_digit(value: Any) -> Any:
-    """将纯数字字符串转换为 int，其他保持原样。"""
-
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str):
-        s = value.strip()
-        if s.isdigit():
-            try:
-                return int(s)
-            except Exception:
-                return value
-    return value
 
 
 def _format_time(ts: Any) -> str:
