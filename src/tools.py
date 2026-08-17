@@ -7,16 +7,20 @@ Tool 组件侧重于"查询"功能，供 LLM 调用以获取信息。
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 from src.app.plugin_system.api import adapter_api, stream_api
 from src.app.plugin_system.api.log_api import get_logger
 from src.app.plugin_system.base import BaseTool
 from src.app.plugin_system.types import ChatType
 
+if TYPE_CHECKING:
+    from ..config import SnowLumaExtensionConfig
+
 from .actions import (
     _call_snowluma_api_with_data,
     _coerce_int_if_digit,
+    _is_group_allowed,
 )
 from .qq_faces import QQ_FACE
 
@@ -37,6 +41,22 @@ class GetGroupJoinRequestsTool(BaseTool):
     chat_type: ChatType = ChatType.GROUP
     associated_platforms: list[str] = ["qq"]
 
+    async def go_activate(self) -> bool:  # noqa: D401
+        """根据插件配置与当前群名单判定是否激活。"""
+        config = cast("SnowLumaExtensionConfig | None", self.plugin.config)
+        if config is None or not config.plugin.enabled or not config.join_request.enable:
+            return False
+
+        group_id = await _get_group_id_from_context_tool(self)
+        if group_id is not None and not _is_group_allowed(
+            group_id,
+            config.join_request.group_list_type,
+            config.join_request.group_list,
+        ):
+            return False
+
+        return True
+
     async def execute(
         self,
         include_all: Annotated[bool, "是否包含已处理的请求（true=查看全部历史，false=仅待审批）"] = False,
@@ -49,9 +69,19 @@ class GetGroupJoinRequestsTool(BaseTool):
         Returns:
             tuple[bool, str]: (是否成功, 格式化的请求列表文本)
         """
-        group_id = _get_group_id_from_context_tool(self)
+        group_id = await _get_group_id_from_context_tool(self)
         if not group_id:
             return False, "该工具只能在群聊上下文使用：未获取到 group_id。"
+
+        config = cast("SnowLumaExtensionConfig | None", self.plugin.config)
+        if config is not None and not config.join_request.enable:
+            return False, "加群请求审批功能未启用（join_request.enable=false）。"
+        if config is not None and not _is_group_allowed(
+            group_id,
+            config.join_request.group_list_type,
+            config.join_request.group_list,
+        ):
+            return False, f"群 {group_id} 不在加群审批允许名单中。"
 
         params: dict[str, Any] = {
             "group_id": _coerce_int_if_digit(group_id),
@@ -156,7 +186,7 @@ class GetGroupMemberInfoTool(BaseTool):
         user_id: Annotated[str, "要查询的目标 QQ 号"],
         no_cache: Annotated[bool, "是否不使用缓存（true=强制从服务器获取最新数据）"] = False,
     ) -> tuple[bool, str]:
-        group_id = _get_group_id_from_context_tool(self)
+        group_id = await _get_group_id_from_context_tool(self)
         if not group_id:
             return False, "该工具只能在群聊上下文使用：未获取到 group_id。"
 
@@ -214,14 +244,35 @@ class GetGroupMemberInfoTool(BaseTool):
         return True, "\n".join(lines)
 
 
-def _get_group_id_from_context_tool(tool: BaseTool) -> Any:
-    """从 Tool 的触发消息中提取 group_id。"""
+async def _get_group_id_from_context_tool(tool: BaseTool) -> Any:
+    """从 Tool 的上下文或触发消息中提取 group_id。"""
 
     msg = tool.trigger_message
     if msg is not None:
         group_id = msg.extra.get("group_id") or msg.extra.get("target_group_id")
         if group_id is not None:
             return group_id
+
+    # 兜底：从 stream_api 获取当前流并回溯查找消息 extra
+    stream_id = tool.get_current_stream_id()
+    if stream_id:
+        try:
+            chat_stream = await stream_api.get_or_create_stream(stream_id=stream_id)
+            if chat_stream is not None:
+                context = chat_stream.context
+                candidates = []
+                candidates.extend(context.unread_messages)
+                candidates.extend(context.history_messages)
+                candidates.extend(list(context.message_cache))
+                if context.current_message:
+                    candidates.append(context.current_message)
+
+                for m in reversed([c for c in candidates if c is not None]):
+                    gid = m.extra.get("group_id") or m.extra.get("target_group_id")
+                    if gid is not None:
+                        return gid
+        except Exception:
+            pass
 
     return None
 

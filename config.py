@@ -121,11 +121,19 @@ class SnowLumaExtensionConfig(BaseConfig):
             default=False,
             description="是否启用加群请求审批管理功能（审批 Action 与查询 Tool）",
         )
+        group_list_type: str = Field(
+            default="white",
+            description="加群审批群名单模式：white（白名单，仅列表中的群启用）/ black（黑名单，列表中的群禁用）",
+        )
+        group_list: list[str | int] = Field(
+            default_factory=list,
+            description="加群审批群号列表（配合 group_list_type 决定启用或禁用特定群）",
+        )
         error_hint: str = Field(
             default=(
                 "【入群审核规则】1. QQ等级必须高于20级；"
                 "2. 验证留言必须明确说明入群意图或按要求作答；"
-                "3. 遇到广告、推销或回答与问题无关、莫名其妙的直接拒绝；"
+                "3. 遇到广告、推销或回答与问题无关、莫名极妙的直接拒绝；"
                 "4. 如果通过沟通确认是正常的真人，但QQ等级不达标，可以酌情考虑通过。"
             ),
             description="注入给 LLM 的入群审核规则提示词，可按需自定义",

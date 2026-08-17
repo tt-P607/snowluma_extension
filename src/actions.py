@@ -75,6 +75,34 @@ def _get_group_id_from_context(action: BaseAction) -> Any:
     return None
 
 
+def _is_group_allowed(
+    group_id: Any,
+    list_type: str,
+    group_list: list[str | int],
+) -> bool:
+    """判定指定群号是否在黑/白名单允许范围内。
+
+    Args:
+        group_id: 待判定的群号
+        list_type: 名单类型 ('white' / 'black')
+        group_list: 群号列表
+
+    Returns:
+        bool: 是否允许
+    """
+    if not group_id:
+        return False
+    str_group_id = str(group_id).strip()
+    str_group_set = {str(gid).strip() for gid in group_list if str(gid).strip()}
+
+    normalized_type = (list_type or "white").strip().lower()
+    if normalized_type == "white":
+        return str_group_id in str_group_set
+    if normalized_type == "black":
+        return str_group_id not in str_group_set
+    return True
+
+
 def _format_snowluma_failure(action: str, resp: dict[str, Any], error_hint: str = "") -> str:
     """将 SnowLuma 响应格式化为更易懂的失败文本。
 
@@ -269,7 +297,16 @@ class HandleGroupJoinRequestAction(_SnowLumaBaseAction):
     chat_type: ChatType = ChatType.GROUP
 
     async def _feature_enabled(self, config: SnowLumaExtensionConfig) -> bool:
-        return config.join_request.enable
+        if not config.join_request.enable:
+            return False
+        group_id = _get_group_id_from_context(self)
+        if group_id is not None and not _is_group_allowed(
+            group_id,
+            config.join_request.group_list_type,
+            config.join_request.group_list,
+        ):
+            return False
+        return True
 
     async def execute(
         self,
@@ -289,6 +326,15 @@ class HandleGroupJoinRequestAction(_SnowLumaBaseAction):
         """
         if not flag or not flag.strip():
             return False, "flag 不能为空，请先调用 get_group_join_requests 获取有效的 flag。"
+
+        config = cast(SnowLumaExtensionConfig | None, self.plugin.config)
+        group_id = _get_group_id_from_context(self)
+        if config is not None and group_id is not None and not _is_group_allowed(
+            group_id,
+            config.join_request.group_list_type,
+            config.join_request.group_list,
+        ):
+            return False, f"群 {group_id} 不在加群审批允许名单中。"
 
         params: dict[str, Any] = {
             "flag": flag.strip(),
