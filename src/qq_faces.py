@@ -1,6 +1,6 @@
 """QQ 原生表情映射表（ID → 名称）。
 
-与 snowluma_adapter 中维护的表情表保持一致。
+与 OneBot 兼容协议中的 QQ 原生表情编号保持一致。
 """
 
 QQ_FACE: dict[str, str] = {

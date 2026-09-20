@@ -19,11 +19,10 @@ from src.core.prompt import SystemReminderInsertType
 from src.kernel.concurrency import get_task_manager
 from src.kernel.event import EventDecision
 
+from .adapter_client import call_qq_adapter_api
 from .actions import _coerce_int_if_digit
 
 logger = get_logger("snowluma_extension")
-
-_SNOWLUMA_ADAPTER_SIGNATURE = "snowluma_adapter:adapter:snowluma_adapter"
 
 # reminder 名称，在流私有 bucket 内唯一（覆盖式更新）
 _REMINDER_NAME = "bot_role"
@@ -365,10 +364,6 @@ async def fetch_and_update_bot_role(
     if not force and not _should_refresh(group_id, config):
         return
 
-    adapter = adapter_api.get_adapter(_SNOWLUMA_ADAPTER_SIGNATURE)
-    if adapter is None or not hasattr(adapter, "send_snowluma_api"):
-        return
-
     try:
         bot_info = await adapter_api.get_bot_info_by_platform("qq")
     except Exception:
@@ -379,7 +374,7 @@ async def fetch_and_update_bot_role(
 
     gid = _coerce_int_if_digit(group_id)
     try:
-        member_resp = await adapter.send_snowluma_api(  # type: ignore[attr-defined]
+        member_resp = await call_qq_adapter_api(
             "get_group_member_info",
             {"group_id": gid, "user_id": _coerce_int_if_digit(bot_id), "no_cache": True},
             timeout=30.0,
@@ -395,7 +390,7 @@ async def fetch_and_update_bot_role(
 
     honor_data: dict[str, Any] | None = None
     try:
-        honor_resp = await adapter.send_snowluma_api(  # type: ignore[attr-defined]
+        honor_resp = await call_qq_adapter_api(
             "get_group_honor_info",
             {"group_id": gid, "type": "all"},
             timeout=30.0,
@@ -409,7 +404,7 @@ async def fetch_and_update_bot_role(
     # 查询群名（仅用于日志展示，失败不阻塞主流程）
     group_name = ""
     try:
-        group_resp = await adapter.send_snowluma_api(  # type: ignore[attr-defined]
+        group_resp = await call_qq_adapter_api(
             "get_group_info",
             {"group_id": gid, "no_cache": True},
             timeout=30.0,

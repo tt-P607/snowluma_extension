@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from ..config import SnowLumaExtensionConfig
 
 from .actions import (
-    _call_snowluma_api_with_data,
+    _call_qq_adapter_api_with_data,
     _coerce_int_if_digit,
     _is_group_allowed,
 )
@@ -88,7 +88,7 @@ class GetGroupJoinRequestsTool(BaseTool):
             "only_pending": not bool(include_all),
         }
 
-        ok, msg, data = await _call_snowluma_api_with_data(
+        ok, msg, data = await _call_qq_adapter_api_with_data(
             action_name="get_group_system_msg",
             params=params,
         )
@@ -102,7 +102,7 @@ class GetGroupJoinRequestsTool(BaseTool):
         # get_group_system_msg 的 requester_uin 为 0、nick 为空，
         # 用 get_group_ignored_notifies 补充真实申请人信息
         detail_map: dict[str, dict[str, Any]] = {}
-        ok2, _, detail_data = await _call_snowluma_api_with_data(
+        ok2, _, detail_data = await _call_qq_adapter_api_with_data(
             action_name="get_group_ignored_notifies",
             params={},
         )
@@ -137,7 +137,7 @@ class GetGroupJoinRequestsTool(BaseTool):
             # 用 get_stranger_info 补充申请人 QQ 等级/性别/年龄/个性签名
             if requester_uin not in ("", "0", "未知"):
                 try:
-                    ok3, _, stranger = await _call_snowluma_api_with_data(
+                    ok3, _, stranger = await _call_qq_adapter_api_with_data(
                         action_name="get_stranger_info",
                         params={"user_id": _coerce_int_if_digit(requester_uin)},
                     )
@@ -196,7 +196,7 @@ class GetGroupMemberInfoTool(BaseTool):
             "no_cache": bool(no_cache),
         }
 
-        ok, msg, data = await _call_snowluma_api_with_data(
+        ok, msg, data = await _call_qq_adapter_api_with_data(
             action_name="get_group_member_info",
             params=params,
         )
@@ -240,7 +240,7 @@ class GetGroupMemberInfoTool(BaseTool):
             user_id=user_id,
         )
 
-        logger.info(f"SnowLuma API 调用成功: action=get_group_member_info, user_id={user_id}")
+        logger.info(f"QQ 适配器 API 调用成功: action=get_group_member_info, user_id={user_id}")
         return True, "\n".join(lines)
 
 
@@ -349,7 +349,7 @@ class GetGroupNoticeTool(BaseTool):
             "group_id": _coerce_int_if_digit(group_id),
         }
 
-        ok, msg, data = await _call_snowluma_api_with_data(
+        ok, msg, data = await _call_qq_adapter_api_with_data(
             action_name="_get_group_notice",
             params=params,
         )
@@ -392,7 +392,7 @@ class GetGroupNoticeTool(BaseTool):
             lines.append(f"正文：{text}")
             lines.append("")
 
-        logger.info(f"SnowLuma API 调用成功: action=_get_group_notice, count={len(notices)}")
+        logger.info(f"QQ 适配器 API 调用成功: action=_get_group_notice, count={len(notices)}")
         return True, "\n".join(lines)
 
 
@@ -454,7 +454,7 @@ class GetEssenceMsgListTool(BaseTool):
 
         params = {"group_id": _coerce_int_if_digit(group_id)}
 
-        ok, msg, data = await _call_snowluma_api_with_data(
+        ok, msg, data = await _call_qq_adapter_api_with_data(
             action_name="get_essence_msg_list",
             params=params,
         )
@@ -513,7 +513,7 @@ class GetGroupHonorInfoTool(BaseTool):
             "type": "all",
         }
 
-        ok, msg, data = await _call_snowluma_api_with_data(
+        ok, msg, data = await _call_qq_adapter_api_with_data(
             action_name="get_group_honor_info",
             params=params,
         )
@@ -585,7 +585,7 @@ class GetGroupShutListTool(BaseTool):
 
         params = {"group_id": _coerce_int_if_digit(group_id)}
 
-        ok, msg, data = await _call_snowluma_api_with_data(
+        ok, msg, data = await _call_qq_adapter_api_with_data(
             action_name="get_group_shut_list",
             params=params,
         )
@@ -642,7 +642,7 @@ class GetGroupInfoTool(BaseTool):
             "no_cache": bool(no_cache),
         }
 
-        ok, msg, data = await _call_snowluma_api_with_data(
+        ok, msg, data = await _call_qq_adapter_api_with_data(
             action_name="get_group_info",
             params=params,
         )
@@ -706,7 +706,7 @@ class GetGroupMemberListTool(BaseTool):
             "no_cache": bool(no_cache),
         }
 
-        ok, msg, data = await _call_snowluma_api_with_data(
+        ok, msg, data = await _call_qq_adapter_api_with_data(
             action_name="get_group_member_list",
             params=params,
             timeout=60.0,

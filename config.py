@@ -3,7 +3,7 @@
 配置文件默认路径：config/plugins/snowluma_extension/config.toml
 
 说明：
-- 本插件依赖 `snowluma_adapter` 适配器。
+- 本插件通过框架公共适配器接口调用 QQ 平台能力。
 - 所有功能默认关闭，需显式在配置中开启。
 """
 

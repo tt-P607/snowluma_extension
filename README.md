@@ -1,6 +1,6 @@
 # SnowLuma Extension
 
-SnowLuma 适配器扩展插件，为 Bot 提供 QQ 平台的高级操作能力。
+QQ 平台扩展插件，为 Bot 提供群管理、消息操作和信息查询能力。
 
 ## 功能特性
 
@@ -93,7 +93,8 @@ SnowLuma 适配器扩展插件，为 Bot 提供 QQ 平台的高级操作能力�
 | `join_request.enable` | `false` | 加群请求审批管理功能开关 |
 | `join_request.error_hint` | （见配置） | 注入给 LLM 的入群审核规则提示词 |
 
-## 依赖
+## 运行要求
 
 - Neo-MoFox >= 1.0.0
-- snowluma_adapter >= 2.0.0
+- 需要至少启动一个支持适配器命令的 QQ 适配器，例如 `onebot_adapter` 或 `snowluma_adapter`。
+- 本插件不声明对某个具体 QQ 适配器的固定依赖。

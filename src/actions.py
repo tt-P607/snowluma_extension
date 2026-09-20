@@ -1,7 +1,6 @@
 """snowluma_extension Actions。
 
-每个 Action 都通过 `snowluma_adapter` 的 `send_snowluma_api(action, params)` 或者
-向 core 发送含有 CommandType 的 MessageEnvelope 来调用 SnowLuma 功能。
+每个 Action 都通过框架公共适配器命令接口调用 QQ 平台功能。
 并通过 go_activate() 读取配置开关决定是否向 LLM 暴露。
 """
 
@@ -14,19 +13,17 @@ from typing import Annotated, Any, cast
 
 import orjson
 
-from src.app.plugin_system.api import adapter_api, plugin_api, storage_api
+from src.app.plugin_system.api import plugin_api, storage_api
 from src.app.plugin_system.api.log_api import get_logger
 from src.app.plugin_system.base import BaseAction
 from src.app.plugin_system.types import ChatType
 from src.kernel.concurrency import get_task_manager
 
 from ..config import SnowLumaExtensionConfig
+from .adapter_client import call_qq_adapter_api
 from .qq_faces import QQ_FACE
 
 logger = get_logger("snowluma_extension")
-
-_SNOWLUMA_ADAPTER_SIGNATURE = "snowluma_adapter:adapter:snowluma_adapter"
-
 
 def _coerce_int_if_digit(value: Any) -> Any:
     """将纯数字字符串转换为 int，其他保持原样。"""
@@ -103,12 +100,12 @@ def _is_group_allowed(
     return True
 
 
-def _format_snowluma_failure(action: str, resp: dict[str, Any], error_hint: str = "") -> str:
-    """将 SnowLuma 响应格式化为更易懂的失败文本。
+def _format_adapter_failure(action: str, resp: dict[str, Any], error_hint: str = "") -> str:
+    """将适配器响应格式化为更易懂的失败文本。
 
     Args:
         action: API 动作名称
-        resp: SnowLuma 响应字典
+        resp: QQ 适配器响应字典
         error_hint: 附加给 LLM 的提示词（来自插件配置），指导 bot 如何向用户反馈错误
     """
 
@@ -137,8 +134,8 @@ def _format_snowluma_failure(action: str, resp: dict[str, Any], error_hint: str 
     elif "超时" in detail or "timeout" in lowered:
         result = (
             f"{action} 失败：请求超时。\n"
-            "- 请检查 snowluma_adapter 是否已连接 SnowLuma\n"
-            "- 请检查 SnowLuma 服务是否正常\n"
+            "- 请检查 QQ 适配器是否已连接平台服务\n"
+            "- 请检查 QQ 平台服务是否正常\n"
             f"- 原始信息：{detail}"
         )
     else:
@@ -164,16 +161,16 @@ def _get_error_hint() -> str:
     return ""
 
 
-async def _call_snowluma_api(
+async def _call_qq_adapter_api(
     *,
     action_name: str,
     params: dict[str, Any],
     timeout: float = 30.0,
 ) -> tuple[bool, str]:
-    """调用 snowluma_adapter API 并统一解析响应。
+    """调用 QQ 适配器 API 并统一解析响应。
 
     Args:
-        action_name: SnowLuma API 动作名称
+        action_name: QQ 适配器 API 动作名称
         params: API 参数
         timeout: 超时时间（秒）
 
@@ -181,51 +178,33 @@ async def _call_snowluma_api(
         tuple[bool, str]: (是否成功, 结果文本)
     """
 
-    adapter = adapter_api.get_adapter(_SNOWLUMA_ADAPTER_SIGNATURE)
-    if adapter is None:
-        logger.warning(f"SnowLuma API 调用失败：adapter 未找到 (signature={_SNOWLUMA_ADAPTER_SIGNATURE})")
-        return False, "snowluma_adapter 未启动：请先启用并启动 snowluma_adapter 插件。"
-
-    if not hasattr(adapter, "send_snowluma_api"):
-        logger.warning(f"SnowLuma API 调用失败：adapter 不支持 send_snowluma_api (type={type(adapter).__name__})")
-        return False, "snowluma_adapter 不支持 send_snowluma_api：请确认 snowluma_adapter 版本兼容。"
-
-    logger.debug(f"调用 SnowLuma API: action={action_name}, params={params}")
-
-    try:
-        resp = await adapter.send_snowluma_api(action_name, params, timeout=timeout)  # type: ignore[attr-defined]
-    except Exception as exc:
-        logger.error(f"SnowLuma API 调用异常: action={action_name}, params={params}, error={exc}")
-        return (
-            False,
-            f"调用 SnowLuma API 异常：{exc}\n- action={action_name}\n- params={params}",
-        )
-
-    logger.debug(f"SnowLuma API 响应: action={action_name}, resp={resp}")
+    logger.debug(f"调用 QQ 适配器 API: action={action_name}, params={params}")
+    resp = await call_qq_adapter_api(action_name, params, timeout=timeout)
+    logger.debug(f"QQ 适配器 API 响应: action={action_name}, resp={resp}")
 
     status = str(resp.get("status") or "").strip().lower()
     retcode = resp.get("retcode")
     if status == "ok" and (retcode == 0 or retcode is None):
-        logger.info(f"SnowLuma API 调用成功: action={action_name}")
+        logger.info(f"QQ 适配器 API 调用成功: action={action_name}")
         return True, "ok"
 
-    logger.warning(f"SnowLuma API 调用失败: action={action_name}, status={status}, retcode={retcode}, resp={resp}")
-    return False, _format_snowluma_failure(action_name, resp, _get_error_hint())
+    logger.warning(f"QQ 适配器 API 调用失败: action={action_name}, status={status}, retcode={retcode}, resp={resp}")
+    return False, _format_adapter_failure(action_name, resp, _get_error_hint())
 
 
-async def _call_snowluma_api_with_data(
+async def _call_qq_adapter_api_with_data(
     *,
     action_name: str,
     params: dict[str, Any],
     timeout: float = 30.0,
 ) -> tuple[bool, str, Any]:
-    """调用 snowluma_adapter API 并返回 data 字段。
+    """调用 QQ 适配器 API 并返回 data 字段。
 
-    在 ``_call_snowluma_api`` 基础上额外返回响应的 ``data`` 字段，
+    在 ``_call_qq_adapter_api`` 基础上额外返回响应的 ``data`` 字段，
     供需要处理返回数据的 Tool / 轮询器复用。
 
     Args:
-        action_name: SnowLuma API 动作名称
+        action_name: QQ 适配器 API 动作名称
         params: API 参数
         timeout: 超时时间（秒）
 
@@ -233,37 +212,18 @@ async def _call_snowluma_api_with_data(
         tuple[bool, str, Any]: (是否成功, 结果文本, data 字段)
     """
 
-    adapter = adapter_api.get_adapter(_SNOWLUMA_ADAPTER_SIGNATURE)
-    if adapter is None:
-        logger.warning(f"SnowLuma API 调用失败：adapter 未找到 (signature={_SNOWLUMA_ADAPTER_SIGNATURE})")
-        return False, "snowluma_adapter 未启动：请先启用并启动 snowluma_adapter 插件。", None
-
-    if not hasattr(adapter, "send_snowluma_api"):
-        logger.warning(f"SnowLuma API 调用失败：adapter 不支持 send_snowluma_api (type={type(adapter).__name__})")
-        return False, "snowluma_adapter 不支持 send_snowluma_api：请确认 snowluma_adapter 版本兼容。", None
-
-    logger.debug(f"调用 SnowLuma API: action={action_name}, params={params}")
-
-    try:
-        resp = await adapter.send_snowluma_api(action_name, params, timeout=timeout)  # type: ignore[attr-defined]
-    except Exception as exc:
-        logger.error(f"SnowLuma API 调用异常: action={action_name}, params={params}, error={exc}")
-        return (
-            False,
-            f"调用 SnowLuma API 异常：{exc}\n- action={action_name}\n- params={params}",
-            None,
-        )
-
-    logger.debug(f"SnowLuma API 响应: action={action_name}, resp={resp}")
+    logger.debug(f"调用 QQ 适配器 API: action={action_name}, params={params}")
+    resp = await call_qq_adapter_api(action_name, params, timeout=timeout)
+    logger.debug(f"QQ 适配器 API 响应: action={action_name}, resp={resp}")
 
     status = str(resp.get("status") or "").strip().lower()
     retcode = resp.get("retcode")
     if status == "ok" and (retcode == 0 or retcode is None):
-        logger.info(f"SnowLuma API 调用成功: action={action_name}")
+        logger.info(f"QQ 适配器 API 调用成功: action={action_name}")
         return True, "ok", resp.get("data")
 
-    logger.warning(f"SnowLuma API 调用失败: action={action_name}, status={status}, retcode={retcode}, resp={resp}")
-    return False, _format_snowluma_failure(action_name, resp, _get_error_hint()), None
+    logger.warning(f"QQ 适配器 API 调用失败: action={action_name}, status={status}, retcode={retcode}, resp={resp}")
+    return False, _format_adapter_failure(action_name, resp, _get_error_hint()), None
 
 
 class _SnowLumaBaseAction(BaseAction):
@@ -343,7 +303,7 @@ class HandleGroupJoinRequestAction(_SnowLumaBaseAction):
         if not approve and reason:
             params["reason"] = reason
 
-        ok, msg = await _call_snowluma_api(action_name="set_group_add_request", params=params)
+        ok, msg = await _call_qq_adapter_api(action_name="set_group_add_request", params=params)
         if ok:
             action_text = "通过" if approve else "拒绝"
             return True, f"已{action_text}加群请求（flag={flag}）。"
@@ -385,7 +345,7 @@ class MuteGroupMemberAction(_SnowLumaBaseAction):
             "duration": int(duration_seconds),
         }
 
-        ok, msg = await _call_snowluma_api(action_name="set_group_ban", params=params)
+        ok, msg = await _call_qq_adapter_api(action_name="set_group_ban", params=params)
         if ok:
             if duration_seconds == 0:
                 return True, f"已解除用户 {user_id} 的禁言。"
@@ -417,7 +377,7 @@ class UnmuteGroupMemberAction(_SnowLumaBaseAction):
             "duration": 0,
         }
 
-        ok, msg = await _call_snowluma_api(action_name="set_group_ban", params=params)
+        ok, msg = await _call_qq_adapter_api(action_name="set_group_ban", params=params)
         if ok:
             return True, f"已解除用户 {user_id} 的禁言。"
         return False, msg
@@ -502,7 +462,7 @@ class ReactToMessageAction(_SnowLumaBaseAction):
                 "set": True,
             }
 
-            ok, msg = await _call_snowluma_api(action_name="set_msg_emoji_like", params=params)
+            ok, msg = await _call_qq_adapter_api(action_name="set_msg_emoji_like", params=params)
             if ok:
                 success_count += 1
             else:
@@ -567,7 +527,7 @@ class PokeGroupMemberAction(_SnowLumaBaseAction):
                     "user_id": _coerce_int_if_digit(uid),
                 }
 
-                ok, msg = await _call_snowluma_api(action_name="send_poke", params=params)
+                ok, msg = await _call_qq_adapter_api(action_name="send_poke", params=params)
                 if ok:
                     success_count += 1
                 else:
@@ -605,7 +565,7 @@ class RecallMessageAction(_SnowLumaBaseAction):
             "message_id": _coerce_int_if_digit(message_id),
         }
 
-        ok, msg = await _call_snowluma_api(action_name="delete_msg", params=params)
+        ok, msg = await _call_qq_adapter_api(action_name="delete_msg", params=params)
         if ok:
             return True, f"已撤回消息 {message_id}。"
         return False, msg
@@ -637,7 +597,7 @@ class GroupSignAction(_SnowLumaBaseAction):
 
         params = {"group_id": _coerce_int_if_digit(group_id)}
 
-        ok, msg = await _call_snowluma_api(action_name="set_group_sign", params=params)
+        ok, msg = await _call_qq_adapter_api(action_name="set_group_sign", params=params)
         if ok:
             # 记录今天已打卡
             try:
@@ -676,7 +636,7 @@ class KickGroupMemberAction(_SnowLumaBaseAction):
             "reject_add_request": bool(reject_add_request),
         }
 
-        ok, msg = await _call_snowluma_api(action_name="set_group_kick", params=params)
+        ok, msg = await _call_qq_adapter_api(action_name="set_group_kick", params=params)
         if ok:
             suffix = "（已拒绝再次加群）" if reject_add_request else ""
             return True, f"已踢出用户 {user_id}{suffix}。"
@@ -712,7 +672,7 @@ class SetGroupNameAction(_SnowLumaBaseAction):
             "group_name": str(group_name),
         }
 
-        ok, msg = await _call_snowluma_api(action_name="set_group_name", params=params)
+        ok, msg = await _call_qq_adapter_api(action_name="set_group_name", params=params)
         if ok:
             return True, f"已将群名修改为：{group_name}。"
         return False, msg
@@ -746,7 +706,7 @@ class SetGroupCardAction(_SnowLumaBaseAction):
             "card": str(card),
         }
 
-        ok, msg = await _call_snowluma_api(action_name="set_group_card", params=params)
+        ok, msg = await _call_qq_adapter_api(action_name="set_group_card", params=params)
         if ok:
             action_desc = f"将用户 {user_id} 的群名片修改为 {card}" if card else f"清除了用户 {user_id} 的群名片"
             return True, f"已{action_desc}。"
@@ -782,7 +742,7 @@ class SetGroupSpecialTitleAction(_SnowLumaBaseAction):
             "duration": int(duration),
         }
 
-        ok, msg = await _call_snowluma_api(action_name="set_group_special_title", params=params)
+        ok, msg = await _call_qq_adapter_api(action_name="set_group_special_title", params=params)
         if ok:
             action_desc = f"将用户 {user_id} 的群头衔修改为 {special_title}" if special_title else f"清除了用户 {user_id} 的群头衔"
             return True, f"已{action_desc}。"
@@ -825,7 +785,7 @@ class SendGroupNoticeAction(_SnowLumaBaseAction):
         if image:
             params["image"] = str(image)
 
-        ok, msg = await _call_snowluma_api(action_name="_send_group_notice", params=params)
+        ok, msg = await _call_qq_adapter_api(action_name="_send_group_notice", params=params)
         if ok:
             type_names = {0: "普通公告", 1: "弹窗推送", 2: "新成员推送", 3: "改名引导"}
             extras: list[str] = []
@@ -867,7 +827,7 @@ class DeleteGroupNoticeAction(_SnowLumaBaseAction):
             "notice_id": str(notice_id),
         }
 
-        ok, msg = await _call_snowluma_api(action_name="_del_group_notice", params=params)
+        ok, msg = await _call_qq_adapter_api(action_name="_del_group_notice", params=params)
         if ok:
             return True, f"已删除群公告 {notice_id}。"
         return False, msg
@@ -912,7 +872,7 @@ class SendGroupForwardMsgAction(_SnowLumaBaseAction):
             "messages": parsed_messages,
         }
 
-        ok, msg = await _call_snowluma_api(action_name="send_group_forward_msg", params=params)
+        ok, msg = await _call_qq_adapter_api(action_name="send_group_forward_msg", params=params)
         if ok:
             return True, f"已成功发送合并转发消息（共 {len(parsed_messages)} 条节点）。"
         return False, msg
@@ -939,7 +899,7 @@ class SetEssenceMsgAction(_SnowLumaBaseAction):
             "message_id": _coerce_int_if_digit(message_id),
         }
 
-        ok, msg = await _call_snowluma_api(action_name="set_essence_msg", params=params)
+        ok, msg = await _call_qq_adapter_api(action_name="set_essence_msg", params=params)
         if ok:
             return True, f"已将消息 {message_id} 设为精华消息。"
         return False, msg
@@ -966,7 +926,7 @@ class DeleteEssenceMsgAction(_SnowLumaBaseAction):
             "message_id": _coerce_int_if_digit(message_id),
         }
 
-        ok, msg = await _call_snowluma_api(action_name="delete_essence_msg", params=params)
+        ok, msg = await _call_qq_adapter_api(action_name="delete_essence_msg", params=params)
         if ok:
             return True, f"已将消息 {message_id} 从精华消息中移除。"
         return False, msg
@@ -996,7 +956,7 @@ class ForwardGroupSingleMsgAction(_SnowLumaBaseAction):
             "group_id": _coerce_int_if_digit(group_id),
         }
 
-        ok, msg = await _call_snowluma_api(action_name="forward_group_single_msg", params=params)
+        ok, msg = await _call_qq_adapter_api(action_name="forward_group_single_msg", params=params)
         if ok:
             return True, f"已将消息 {message_id} 转发到群 {group_id}。"
         return False, msg
@@ -1026,7 +986,7 @@ class ForwardFriendSingleMsgAction(_SnowLumaBaseAction):
             "user_id": _coerce_int_if_digit(user_id),
         }
 
-        ok, msg = await _call_snowluma_api(action_name="forward_friend_single_msg", params=params)
+        ok, msg = await _call_qq_adapter_api(action_name="forward_friend_single_msg", params=params)
         if ok:
             return True, f"已将消息 {message_id} 转发给好友 {user_id}。"
         return False, msg
@@ -1060,7 +1020,7 @@ class SendLikeAction(_SnowLumaBaseAction):
             "times": times,
         }
 
-        ok, msg = await _call_snowluma_api(action_name="send_like", params=params)
+        ok, msg = await _call_qq_adapter_api(action_name="send_like", params=params)
         if ok:
             return True, f"已给用户 {user_id} 点赞 {times} 次。"
         return False, msg
@@ -1097,7 +1057,7 @@ class SetGroupWholeBanAction(_SnowLumaBaseAction):
             "enable": bool(enable),
         }
 
-        ok, msg = await _call_snowluma_api(action_name="set_group_whole_ban", params=params)
+        ok, msg = await _call_qq_adapter_api(action_name="set_group_whole_ban", params=params)
         if ok:
             if enable and duration_seconds > 0:
                 # 注册延迟任务自动关闭全群禁言（内存态，重启后失效）
@@ -1105,7 +1065,7 @@ class SetGroupWholeBanAction(_SnowLumaBaseAction):
                     """延迟后自动关闭全群禁言。"""
                     await asyncio.sleep(duration_seconds)
                     unban_params = {"group_id": gid, "enable": False}
-                    unban_ok, unban_msg = await _call_snowluma_api(
+                    unban_ok, unban_msg = await _call_qq_adapter_api(
                         action_name="set_group_whole_ban", params=unban_params
                     )
                     if unban_ok:
@@ -1170,20 +1130,15 @@ class SendShareCardAction(_SnowLumaBaseAction):
             card_kind = "个人"
 
         # 第一步：调用 send_ark_share 获取 Ark 卡片 JSON
-        adapter = adapter_api.get_adapter(_SNOWLUMA_ADAPTER_SIGNATURE)
-        if adapter is None:
-            return False, "snowluma_adapter 未启动，无法发送名片。"
-        try:
-            resp = await adapter.send_snowluma_api("send_ark_share", share_params, timeout=30.0)  # type: ignore[attr-defined]
-        except Exception as exc:
-            return False, f"获取{card_kind}名片 Ark 卡片异常：{exc}"
+        ok, error_message, data = await _call_qq_adapter_api_with_data(
+            action_name="send_ark_share",
+            params=share_params,
+            timeout=30.0,
+        )
+        if not ok:
+            return False, f"获取{card_kind}名片 Ark 卡片失败：{error_message}"
 
-        status = str(resp.get("status") or "").strip().lower()
-        retcode = resp.get("retcode")
-        if status != "ok" or (retcode not in (0, None)):
-            return False, _format_snowluma_failure("send_ark_share", resp, _get_error_hint())
-
-        data = resp.get("data") or {}
+        data = data or {}
         ark_msg_str = data.get("arkMsg", "")
         if not ark_msg_str:
             return False, f"{card_kind}名片 Ark 卡片内容为空。"
@@ -1213,7 +1168,7 @@ class SendShareCardAction(_SnowLumaBaseAction):
             send_params["message_type"] = "private"
             send_params["user_id"] = _coerce_int_if_digit(target_user_id)
 
-        ok2, msg2 = await _call_snowluma_api(action_name="send_msg", params=send_params)
+        ok2, msg2 = await _call_qq_adapter_api(action_name="send_msg", params=send_params)
         if ok2:
             return True, f"已发送{card_kind}名片分享。"
         return False, msg2

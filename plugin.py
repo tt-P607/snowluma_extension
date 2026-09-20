@@ -10,7 +10,7 @@ import random
 from datetime import datetime, timedelta
 from typing import cast
 
-from src.app.plugin_system.api import adapter_api, storage_api
+from src.app.plugin_system.api import storage_api
 from src.app.plugin_system.api.log_api import get_logger
 from src.app.plugin_system.base import BasePlugin, register_plugin
 from src.app.plugin_system.types import EventType
@@ -42,6 +42,7 @@ from .src.actions import (
     SetGroupWholeBanAction,
     UnmuteGroupMemberAction,
 )
+from .src.adapter_client import call_qq_adapter_api
 from .src.bot_role_reminder import BotRoleReminderHandler
 from .src.face_intercept_handler import FaceInterceptHandler
 from .src.tools import (
@@ -58,9 +59,6 @@ from .src.tools import (
 )
 
 logger = get_logger("snowluma_extension")
-
-_SNOWLUMA_ADAPTER_SIGNATURE = "snowluma_adapter:adapter:snowluma_adapter"
-
 
 @register_plugin
 class SnowLumaExtensionPlugin(BasePlugin):
@@ -245,12 +243,6 @@ class SnowLumaExtensionPlugin(BasePlugin):
             except Exception:
                 pass
 
-            adapter = adapter_api.get_adapter(_SNOWLUMA_ADAPTER_SIGNATURE)
-            if adapter is None:
-                logger.warning("定时打卡失败：snowluma_adapter 未启动")
-                await _schedule_next_deferred()
-                return
-
             for gid in group_ids:
                 if jitter_max > 0:
                     delay = random.uniform(jitter_min, jitter_max)
@@ -258,10 +250,15 @@ class SnowLumaExtensionPlugin(BasePlugin):
                     await asyncio.sleep(delay)
                 try:
                     params = {"group_id": int(gid) if gid.isdigit() else gid}
-                    await adapter.send_snowluma_api(
+                    response = await call_qq_adapter_api(
                         "set_group_sign", params, timeout=30.0
-                    )  # type: ignore[attr-defined]
-                    logger.info(f"定时打卡成功：group_id={gid}")
+                    )
+                    if str(response.get("status") or "").lower() == "ok":
+                        logger.info(f"定时打卡成功：group_id={gid}")
+                    else:
+                        logger.warning(
+                            f"定时打卡失败：group_id={gid}, response={response}"
+                        )
                 except Exception as exc:
                     logger.error(f"定时打卡失败：group_id={gid}, error={exc}")
 
@@ -318,10 +315,6 @@ class SnowLumaExtensionPlugin(BasePlugin):
                     except Exception:
                         pass
 
-                    adapter = adapter_api.get_adapter(_SNOWLUMA_ADAPTER_SIGNATURE)
-                    if adapter is None:
-                        logger.warning("补打失败：snowluma_adapter 未启动")
-                        return
                     for gid in group_ids:
                         if jitter_max > 0:
                             await asyncio.sleep(
@@ -331,10 +324,15 @@ class SnowLumaExtensionPlugin(BasePlugin):
                             params = {
                                 "group_id": int(gid) if gid.isdigit() else gid
                             }
-                            await adapter.send_snowluma_api(
+                            response = await call_qq_adapter_api(
                                 "set_group_sign", params, timeout=30.0
-                            )  # type: ignore[attr-defined]
-                            logger.info(f"补打成功：group_id={gid}")
+                            )
+                            if str(response.get("status") or "").lower() == "ok":
+                                logger.info(f"补打成功：group_id={gid}")
+                            else:
+                                logger.warning(
+                                    f"补打失败：group_id={gid}, response={response}"
+                                )
                         except Exception as exc:
                             logger.error(
                                 f"补打失败：group_id={gid}, error={exc}"
