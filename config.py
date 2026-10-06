@@ -55,7 +55,7 @@ class SnowLumaExtensionConfig(BaseConfig):
         enable_get_group_member_info: bool = Field(default=True, description="是否启用：获取群成员信息")
         enable_group_members_reminder: bool = Field(
             default=True,
-            description="是否启用：群成员索引及主动刷新工具，自动缓存群人数和近期成员并注入聊天上下文末尾",
+            description="是否启用：群成员索引及主动刷新工具，缓存群人数和 Bot 视角下近24小时最活跃的成员并注入聊天上下文末尾",
         )
         enable_send_group_notice: bool = Field(default=False, description="是否启用：发送群公告")
         enable_delete_group_notice: bool = Field(default=False, description="是否启用：删除群公告")

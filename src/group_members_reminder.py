@@ -1,4 +1,4 @@
-"""按群缓存成员资料，并向聊天请求末尾注入近期发言成员索引。"""
+"""按群缓存成员资料，并注入 Bot 可见的近二十四小时活跃成员索引。"""
 
 from __future__ import annotations
 
@@ -6,13 +6,14 @@ import asyncio
 import json
 import math
 import time
+from collections import Counter
 from collections.abc import Coroutine
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from html import escape
 from typing import TYPE_CHECKING, Any, cast
 
-from src.app.plugin_system.api import adapter_api, prompt_api, storage_api
+from src.app.plugin_system.api import adapter_api, message_api, prompt_api, storage_api
 from src.app.plugin_system.api.event_api import EventDecision
 from src.app.plugin_system.api.log_api import get_logger
 from src.app.plugin_system.base import BaseEventHandler
@@ -29,7 +30,7 @@ _TITLE = "【当前群成员索引】"
 _PREFIX = f"<system_reminder>\n{_TITLE}\n"
 _REFRESH_SECONDS = 3600
 _SAVE_SECONDS = 60
-_ACTIVE_SECONDS = 7 * 24 * 3600
+_ACTIVE_SECONDS = 24 * 3600
 _MAX_MEMBERS = 30
 
 
@@ -61,6 +62,8 @@ class _GroupCache:
     member_count: int | None = None
     fetched_at: float = 0
     members: dict[str, dict[str, Any]] = field(default_factory=dict)
+    activity_messages: dict[str, tuple[str, float]] = field(default_factory=dict, repr=False)
+    activity_fetched_at: float = 0
     saved_at: float = field(default_factory=time.time)
     attempted_at: float = 0
     dirty: bool = False
@@ -104,19 +107,17 @@ def _read_members(data: Any) -> dict[str, dict[str, Any]]:
 
 
 def _build_reminder(cache: _GroupCache, now: float) -> str:
-    """渲染群概况和近七天发言的最多三十名成员。"""
-    active = [
-        member
-        for user_id, member in cache.members.items()
-        if user_id != cache.bot_id
-        and (last_sent := _timestamp(member.get("last_sent_time"))) is not None
-        and now - _ACTIVE_SECONDS <= last_sent <= now
-    ]
-    active.sort(key=lambda member: member["last_sent_time"], reverse=True)
-    unknown = sum(
-        user_id != cache.bot_id and _timestamp(member.get("last_sent_time")) is None
-        for user_id, member in cache.members.items()
+    """按近二十四小时可见消息数排序，只展示成员身份，不展示条数或正文。"""
+    cache.activity_messages = {
+        message_id: activity
+        for message_id, activity in cache.activity_messages.items()
+        if now - _ACTIVE_SECONDS <= activity[1] <= now
+    }
+    counts = Counter(
+        user_id for user_id, _ in cache.activity_messages.values()
+        if user_id != cache.bot_id and user_id in cache.members
     )
+    active = sorted(counts, key=lambda user_id: (-counts[user_id], int(user_id)))
     count = str(cache.member_count) if cache.member_count is not None else "未知"
     updated = (
         datetime.fromtimestamp(cache.fetched_at, timezone.utc).isoformat()
@@ -129,12 +130,15 @@ def _build_reminder(cache: _GroupCache, now: float) -> str:
         f"群名：{_quoted_name(cache.group_name)}；群成员总数：{count}",
         f"名单更新时间：{updated}",
         "需要最新群人数或成员资料时，可调用 refresh_group_members 工具刷新此索引。",
-        f"近7天有发言记录：{len(active)}人；列出：{min(len(active), _MAX_MEMBERS)}人（不含你自己）。",
-        f"最后发言时间未知：{unknown}人；未知不代表不活跃。",
+        "以下是你在本群近24小时所见记录中最活跃的成员，按可见发言频次从高到低排列，最多30人，不含你自己。",
+        "这只是你视角下的活跃成员参考，不代表未接收到的群消息；不要据此判断谁没有发言。",
     ]
+    if not cache.activity_fetched_at:
+        lines.append("近24小时的已存消息记录尚未加载，当前仅参考已收到的消息，排名可能不完整。")
     if not cache.fetched_at or now - cache.fetched_at >= _REFRESH_SECONDS:
         lines.append("全群资料尚未获取或已过期，等待后台刷新；当前索引可能不完整。")
-    for member in active[:_MAX_MEMBERS]:
+    for user_id in active[:_MAX_MEMBERS]:
+        member = cache.members[user_id]
         lines.append(
             f"- 群名片：{_quoted_name(member['card'])}；"
             f"昵称：{_quoted_name(member['nickname'])}；QQ：{member['user_id']}"
@@ -205,6 +209,7 @@ class GroupMemberIndex:
         self._streams[message.stream_id] = cache
         user_id = str(message.sender_id)
         sent_at = _timestamp(message.time)
+        now = time.time()
         if user_id.isascii() and user_id.isdigit() and user_id != bot_id and sent_at:
             previous = cache.members.get(user_id, {})
             if sent_at >= (_timestamp(previous.get("last_sent_time")) or 0):
@@ -217,10 +222,11 @@ class GroupMemberIndex:
                     "last_sent_time": sent_at,
                 }
                 cache.dirty = True
-        now = time.time()
+            if message.message_id and now - _ACTIVE_SECONDS <= sent_at <= now:
+                cache.activity_messages[str(message.message_id)] = (user_id, sent_at)
         self._write_reminder(message.stream_id, cache, now)
         if (
-            now - cache.fetched_at >= _REFRESH_SECONDS
+            (now - cache.fetched_at >= _REFRESH_SECONDS or not cache.activity_fetched_at)
             and not cache.refreshing
             and now - cache.attempted_at >= _SAVE_SECONDS
         ):
@@ -260,9 +266,37 @@ class GroupMemberIndex:
         return True, "已刷新当前群人数、成员缓存和系统提醒。\n" + _build_reminder(cache, time.time())
 
     async def _refresh(self, cache: _GroupCache) -> bool:
-        """查询完整群资料、更新提醒并返回成功状态，保留较新发言。"""
+        """补齐近二十四小时可见消息、查询群资料并保留查询期间的新发言。"""
         started_at = time.time()
         try:
+            stream_ids = [
+                stream_id for stream_id, stream_cache in self._streams.items()
+                if stream_cache is cache
+            ]
+            for stream_id in stream_ids:
+                messages = await message_api.get_messages_by_time_in_chat_inclusive(
+                    stream_id, started_at - _ACTIVE_SECONDS, started_at, limit=0,
+                )
+                for message in messages:
+                    user_id = str(message.get("sender_id") or "")
+                    message_id = str(message.get("message_id") or "")
+                    sent_at = _timestamp(message.get("time"))
+                    if (
+                        not user_id.isascii() or not user_id.isdigit()
+                        or user_id == cache.bot_id or not message_id or sent_at is None
+                        or not started_at - _ACTIVE_SECONDS <= sent_at <= started_at
+                    ):
+                        continue
+                    cache.activity_messages[message_id] = (user_id, sent_at)
+                    cache.members.setdefault(user_id, {
+                        "user_id": user_id,
+                        "nickname": message.get("sender_name") or "",
+                        "card": message.get("sender_cardname") or "",
+                        "last_sent_time": sent_at,
+                    })
+            cache.activity_fetched_at = started_at
+            for stream_id in stream_ids:
+                self._write_reminder(stream_id, cache, time.time())
             params = {"group_id": int(cache.group_id), "no_cache": True}
             members_response = await adapter_api.send_adapter_command(
                 cache.adapter_signature,
@@ -401,7 +435,7 @@ class GroupMembersReminderHandler(BaseEventHandler):
     """在群消息和聊天请求事件中维护成员索引。"""
 
     name: str = "group_members_reminder_handler"
-    description: str = "缓存群人数和近期发言成员，并注入聊天上下文末尾"
+    description: str = "缓存群人数和 Bot 视角下近24小时最活跃的成员，并注入聊天上下文末尾"
     weight: int = 5
     init_subscribe: list[EventType | str] = [
         EventType.ON_MESSAGE_RECEIVED,
