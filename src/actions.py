@@ -24,6 +24,7 @@ from .adapter_client import call_qq_adapter_api
 from .qq_faces import QQ_FACE
 
 logger = get_logger("snowluma_extension")
+_SIGN_LOCK = asyncio.Lock()
 
 def _coerce_int_if_digit(value: Any) -> Any:
     """将纯数字字符串转换为 int，其他保持原样。"""
@@ -571,6 +572,34 @@ class RecallMessageAction(_SnowLumaBaseAction):
         return False, msg
 
 
+async def _sign_group(group_id: Any) -> tuple[bool, str]:
+    """按群打卡并记录成功日期，合并手动和定时触发。
+
+    Args:
+        group_id: 当前 QQ 群号。
+
+    Returns:
+        是否成功以及打卡结果；失败不会记录当天完成。
+    """
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    group_key = str(_coerce_int_if_digit(group_id))
+    async with _SIGN_LOCK:
+        record = await storage_api.load_json("snowluma_extension", "sign_record") or {}
+        group_dates = record.get("groups", {})
+        if group_dates.get(group_key) == today_str:
+            return True, "今日已在当前群打过卡，无需重复打卡。"
+        ok, msg = await _call_qq_adapter_api(
+            action_name="set_group_sign", params={"group_id": _coerce_int_if_digit(group_id)},
+        )
+        if not ok:
+            return False, msg
+        await storage_api.save_json(
+            "snowluma_extension", "sign_record",
+            {"groups": {**group_dates, group_key: today_str}},
+        )
+        return True, "已执行群打卡。"
+
+
 class GroupSignAction(_SnowLumaBaseAction):
     """群打卡。"""
 
@@ -586,27 +615,7 @@ class GroupSignAction(_SnowLumaBaseAction):
         if not group_id:
             return False, "该动作只能在群聊上下文使用：未获取到 group_id。"
 
-        # 检查今天是否已打过卡
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        try:
-            record = await storage_api.load_json("snowluma_extension", "sign_record")
-            if record and record.get("last_sign_date") == today_str:
-                return True, "今日已打过卡，无需重复打卡。"
-        except Exception:
-            pass
-
-        params = {"group_id": _coerce_int_if_digit(group_id)}
-
-        ok, msg = await _call_qq_adapter_api(action_name="set_group_sign", params=params)
-        if ok:
-            # 记录今天已打卡
-            try:
-                await storage_api.save_json("snowluma_extension", "sign_record", {"last_sign_date": today_str})
-            except Exception:
-                pass
-            return True, "已执行群打卡。"
-
-        return False, msg
+        return await _sign_group(group_id)
 
 
 class KickGroupMemberAction(_SnowLumaBaseAction):
@@ -867,9 +876,27 @@ class SendGroupForwardMsgAction(_SnowLumaBaseAction):
         if not isinstance(parsed_messages, list) or not parsed_messages:
             return False, "messages 必须是非空 JSON 数组。"
 
+        nodes: list[dict[str, Any]] = []
+        for node in parsed_messages:
+            if not isinstance(node, dict):
+                return False, "每个转发节点必须是 JSON 对象。"
+            if node.get("type") == "node" and isinstance(node.get("data"), dict):
+                nodes.append(node)
+            elif all(key in node for key in ("nickname", "user_id", "content")):
+                nodes.append({
+                    "type": "node",
+                    "data": {
+                        "name": str(node["nickname"]),
+                        "uin": str(node["user_id"]),
+                        "content": node["content"],
+                    },
+                })
+            else:
+                return False, "转发节点必须含 nickname、user_id、content，或使用 OneBot node 消息段。"
+
         params = {
             "group_id": _coerce_int_if_digit(group_id),
-            "messages": parsed_messages,
+            "messages": nodes,
         }
 
         ok, msg = await _call_qq_adapter_api(action_name="send_group_forward_msg", params=params)

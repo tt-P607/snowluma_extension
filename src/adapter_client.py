@@ -56,6 +56,8 @@ async def call_qq_adapter_api(
     action_name: str,
     params: dict[str, Any],
     timeout: float = 30.0,
+    *,
+    adapter_signature: str | None = None,
 ) -> dict[str, Any]:
     """通过框架公共接口调用 QQ 适配器命令。
 
@@ -63,12 +65,13 @@ async def call_qq_adapter_api(
         action_name: OneBot 兼容的 API 动作名称。
         params: API 请求参数。
         timeout: 请求超时时间（秒）。
+        adapter_signature: 指定当前消息的适配器；未指定时使用插件默认选择。
 
     Returns:
         dict[str, Any]: 适配器返回的响应字典。
     """
 
-    adapter_signature = get_qq_adapter_signature()
+    adapter_signature = adapter_signature or get_qq_adapter_signature()
     if adapter_signature is None:
         return {
             "status": "error",

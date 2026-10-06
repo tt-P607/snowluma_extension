@@ -10,7 +10,7 @@
     "stream_api": "2.0.0"
   },
   "display_name": "SnowLuma 扩展能力",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "description": "提供 SnowLuma 的群管理、消息操作、表情回应等高级操作能力",
   "author": "言柒",
   "license": "AGPL-3.0",
@@ -104,6 +104,36 @@
       "dependencies": []
     },
     {
+      "component_type": "action",
+      "component_name": "send_group_forward_msg",
+      "dependencies": []
+    },
+    {
+      "component_type": "action",
+      "component_name": "set_essence_msg",
+      "dependencies": []
+    },
+    {
+      "component_type": "action",
+      "component_name": "delete_essence_msg",
+      "dependencies": []
+    },
+    {
+      "component_type": "action",
+      "component_name": "forward_group_single_msg",
+      "dependencies": []
+    },
+    {
+      "component_type": "action",
+      "component_name": "forward_friend_single_msg",
+      "dependencies": []
+    },
+    {
+      "component_type": "action",
+      "component_name": "send_like",
+      "dependencies": []
+    },
+    {
       "component_type": "tool",
       "component_name": "get_group_member_info",
       "dependencies": []
@@ -120,12 +150,32 @@
     },
     {
       "component_type": "tool",
+      "component_name": "refresh_group_members",
+      "dependencies": []
+    },
+    {
+      "component_type": "tool",
       "component_name": "get_group_notice",
       "dependencies": []
     },
     {
       "component_type": "tool",
       "component_name": "get_qq_face_list",
+      "dependencies": []
+    },
+    {
+      "component_type": "tool",
+      "component_name": "get_essence_msg_list",
+      "dependencies": []
+    },
+    {
+      "component_type": "tool",
+      "component_name": "get_group_honor_info",
+      "dependencies": []
+    },
+    {
+      "component_type": "tool",
+      "component_name": "get_group_shut_list",
       "dependencies": []
     },
     {
@@ -141,6 +191,11 @@
     {
       "component_type": "event_handler",
       "component_name": "bot_role_reminder_handler",
+      "dependencies": []
+    },
+    {
+      "component_type": "event_handler",
+      "component_name": "group_members_reminder_handler",
       "dependencies": []
     },
     {

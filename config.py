@@ -4,7 +4,7 @@
 
 说明：
 - 本插件通过框架公共适配器接口调用 QQ 平台能力。
-- 所有功能默认关闭，需显式在配置中开启。
+- 功能是否启用以各字段默认值与运行时配置为准。
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ class SnowLumaExtensionConfig(BaseConfig):
 
     @config_section("features")
     class FeaturesSection(SectionBase):
-        """功能开关（默认全部关闭）。"""
+        """群管理、消息操作和信息查询的独立功能开关。"""
 
         # --- 群管理 Action ---
         enable_mute: bool = Field(default=False, description="是否启用：群成员禁言/解禁/查看禁言列表")
@@ -53,6 +53,10 @@ class SnowLumaExtensionConfig(BaseConfig):
         enable_set_group_admin: bool = Field(default=False, description="是否启用：设置管理员")
         enable_set_group_leave: bool = Field(default=False, description="是否启用：退出群聊")
         enable_get_group_member_info: bool = Field(default=True, description="是否启用：获取群成员信息")
+        enable_group_members_reminder: bool = Field(
+            default=True,
+            description="是否启用：群成员索引及主动刷新工具，自动缓存群人数和近期成员并注入聊天上下文末尾",
+        )
         enable_send_group_notice: bool = Field(default=False, description="是否启用：发送群公告")
         enable_delete_group_notice: bool = Field(default=False, description="是否启用：删除群公告")
         enable_get_group_notice: bool = Field(default=False, description="是否启用：获取群公告列表")

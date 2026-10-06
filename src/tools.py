@@ -16,12 +16,14 @@ from src.app.plugin_system.types import ChatType
 
 if TYPE_CHECKING:
     from ..config import SnowLumaExtensionConfig
+    from .group_members_reminder import GroupMemberIndex
 
 from .actions import (
     _call_qq_adapter_api_with_data,
     _coerce_int_if_digit,
     _is_group_allowed,
 )
+from .adapter_client import get_qq_adapter_signature
 from .qq_faces import QQ_FACE
 
 logger = get_logger("snowluma_extension")
@@ -294,8 +296,12 @@ async def _maybe_refresh_bot_role_on_self_query(
     if not group_id or not user_id:
         return
 
+    signature = get_qq_adapter_signature()
+    if signature is None:
+        return
     try:
-        bot_info = await adapter_api.get_bot_info_by_platform("qq")
+        adapter = adapter_api.get_adapter(signature)
+        bot_info = await adapter.get_bot_info() if adapter is not None else None
     except Exception:
         bot_info = None
     if not bot_info or not bot_info.get("bot_id"):
@@ -321,6 +327,7 @@ async def _maybe_refresh_bot_role_on_self_query(
             config=config,
             force=True,
             source="self_query",
+            adapter_signature=signature,
         )
     except Exception as exc:
         logger.warning(f"bot 主动查询自己时刷新 bot_role reminder 失败: {exc}")
@@ -341,7 +348,7 @@ class GetGroupNoticeTool(BaseTool):
     associated_platforms: list[str] = ["qq"]
 
     async def execute(self) -> tuple[bool, str]:
-        group_id = _get_group_id_from_context_tool(self)
+        group_id = await _get_group_id_from_context_tool(self)
         if not group_id:
             return False, "该工具只能在群聊上下文使用：未获取到 group_id。"
 
@@ -448,7 +455,7 @@ class GetEssenceMsgListTool(BaseTool):
 
     async def execute(self) -> tuple[bool, str]:
         """返回群精华消息列表。"""
-        group_id = _get_group_id_from_context_tool(self)
+        group_id = await _get_group_id_from_context_tool(self)
         if not group_id:
             return False, "该工具只能在群聊上下文使用：未获取到 group_id。"
 
@@ -461,8 +468,12 @@ class GetEssenceMsgListTool(BaseTool):
         if not ok:
             return False, msg
 
-        data = data if isinstance(data, dict) else {}
-        msg_list = data.get("essence_list") or data.get("messages") or []
+        if isinstance(data, list):
+            msg_list = data
+        elif isinstance(data, dict):
+            msg_list = data.get("essence_list") or data.get("messages") or []
+        else:
+            return False, "获取精华消息列表失败：返回数据不是列表。"
         if not msg_list:
             return True, "当前群没有精华消息。"
 
@@ -504,7 +515,7 @@ class GetGroupHonorInfoTool(BaseTool):
 
     async def execute(self) -> tuple[bool, str]:
         """返回群荣誉信息。"""
-        group_id = _get_group_id_from_context_tool(self)
+        group_id = await _get_group_id_from_context_tool(self)
         if not group_id:
             return False, "该工具只能在群聊上下文使用：未获取到 group_id。"
 
@@ -579,7 +590,7 @@ class GetGroupShutListTool(BaseTool):
 
     async def execute(self) -> tuple[bool, str]:
         """返回群禁言列表。"""
-        group_id = _get_group_id_from_context_tool(self)
+        group_id = await _get_group_id_from_context_tool(self)
         if not group_id:
             return False, "该工具只能在群聊上下文使用：未获取到 group_id。"
 
@@ -617,6 +628,39 @@ class GetGroupShutListTool(BaseTool):
         return True, "\n".join(lines)
 
 
+class RefreshGroupMembersTool(BaseTool):
+    """刷新当前群人数、成员缓存和聊天人物提醒。"""
+
+    name: str = "refresh_group_members"
+    description: str = (
+        "主动刷新当前QQ群的成员总人数、完整成员缓存和近期活跃成员系统提醒，"
+        "返回最新人数及近7天发言的最多30人成员索引，含群名片、昵称和QQ号。"
+        "需要确认最新人数、成员变更或索引过期时使用，无需参数。"
+        "绕过一小时缓存期限；若后台正在刷新则等待同一查询，不重复请求。"
+    )
+    chat_type: ChatType = ChatType.GROUP
+    associated_platforms: list[str] = ["qq"]
+
+    async def go_activate(self) -> bool:
+        """与群成员索引共用配置开关。"""
+        config = cast("SnowLumaExtensionConfig | None", self.plugin.config)
+        return bool(
+            config is not None
+            and config.plugin.enabled
+            and config.features.enable_group_members_reminder
+        )
+
+    async def execute(self) -> tuple[bool, str]:
+        """刷新当前聊天流的群成员资料，并返回最新索引。"""
+        if not await self.go_activate():
+            return False, "群成员索引功能未启用，无法主动刷新。"
+        stream_id = self.get_current_stream_id()
+        if not stream_id:
+            return False, "未获取到当前群聊流，无法刷新成员索引。"
+        index = cast("GroupMemberIndex", self.plugin.group_member_index)
+        return await index.refresh_group_members(stream_id)
+
+
 class GetGroupInfoTool(BaseTool):
     """获取群信息。"""
 
@@ -633,7 +677,7 @@ class GetGroupInfoTool(BaseTool):
         no_cache: Annotated[bool, "是否不使用缓存（true=强制从服务器获取最新数据）"] = False,
     ) -> tuple[bool, str]:
         """返回群基本信息。"""
-        group_id = _get_group_id_from_context_tool(self)
+        group_id = await _get_group_id_from_context_tool(self)
         if not group_id:
             return False, "该工具只能在群聊上下文使用：未获取到 group_id。"
 
@@ -697,7 +741,7 @@ class GetGroupMemberListTool(BaseTool):
         no_cache: Annotated[bool, "是否不使用缓存（true=强制从服务器获取最新数据）"] = False,
     ) -> tuple[bool, str]:
         """返回群成员列表。"""
-        group_id = _get_group_id_from_context_tool(self)
+        group_id = await _get_group_id_from_context_tool(self)
         if not group_id:
             return False, "该工具只能在群聊上下文使用：未获取到 group_id。"
 
@@ -737,8 +781,7 @@ class GetGroupMemberListTool(BaseTool):
             sex = sex_map.get(m.get("sex", ""), m.get("sex", "未知"))
             join_time = m.get("join_time", 0)
 
-            display_name = card if card else nickname
-            entry = f"{i}. {display_name}({uid}) [{role}]"
+            entry = f"{i}. 群名片:{card or '未设置'} 昵称:{nickname} QQ:{uid} [{role}]"
             if title:
                 entry += f" 头衔:{title}"
             if level:
@@ -750,6 +793,14 @@ class GetGroupMemberListTool(BaseTool):
                     entry += f" 入群:{datetime.fromtimestamp(int(join_time)).strftime('%Y-%m-%d')}"
                 except (ValueError, TypeError, OSError):
                     pass
+            last_sent_time = m.get("last_sent_time")
+            last_sent = "未知"
+            if last_sent_time:
+                try:
+                    last_sent = datetime.fromtimestamp(int(last_sent_time)).strftime("%Y-%m-%d %H:%M:%S")
+                except (ValueError, TypeError, OSError, OverflowError):
+                    pass
+            entry += f" 最后发言:{last_sent}"
             lines.append(entry)
 
         logger.info(f"获取群成员列表成功: group_id={group_id}, count={len(members)}")
@@ -835,5 +886,6 @@ __all__ = [
     "GetGroupShutListTool",
     "GetGroupInfoTool",
     "GetGroupMemberListTool",
+    "RefreshGroupMembersTool",
     "GetBotMessagesTool",
 ]

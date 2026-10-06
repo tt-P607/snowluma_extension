@@ -21,7 +21,6 @@ QQ 平台扩展插件，为 Bot 提供群管理、消息操作和信息查询能
 | `unmute_group_member` | 解除禁言 |
 | `set_group_whole_ban` | 全群禁言开关 |
 | `react_to_message` | 对消息添加表情回应 |
-| `send_face` | 发送 QQ 原生表情 |
 | `poke_group_member` | 戳一戳群成员 |
 | `recall_message` | 撤回消息 |
 | `group_sign` | 群打卡 |
@@ -48,6 +47,7 @@ QQ 平台扩展插件，为 Bot 提供群管理、消息操作和信息查询能
 | `get_group_member_info` | 获取群成员信息 |
 | `get_group_info` | 获取群基本信息（群名、成员数等） |
 | `get_group_member_list` | 获取群成员列表 |
+| `refresh_group_members` | 主动刷新当前群人数、成员缓存及近期活跃成员索引提醒 |
 | `get_group_notice` | 获取群公告列表 |
 | `get_qq_face_list` | 查询 QQ 表情列表 |
 | `get_essence_msg_list` | 获取群精华消息列表 |
@@ -61,6 +61,31 @@ QQ 平台扩展插件，为 Bot 提供群管理、消息操作和信息查询能
 |--------|------|
 | `face_intercept_handler` | 拦截消息发送，将文本中的表情标记替换为 QQ face 段 |
 | `bot_role_reminder_handler` | 自动查询 bot 在群内的身份资料与荣誉，注入 LLM 上下文 |
+| `group_members_reminder_handler` | 自动缓存群人数和近期发言成员，在聊天上下文末尾提供人物索引 |
+
+## 群成员索引
+
+群成员索引默认开启，通过 `features.enable_group_members_reminder` 控制。设为 `false` 后重载插件或重启 Bot，将停止成员缓存更新、索引提醒和 `refresh_group_members` 工具，不影响原有群查询工具与 Bot 身份提醒。
+
+开启时自动维护当前 QQ 群的成员资料：
+
+- 每小时按需后台刷新完整成员名单和群总人数，同群并发消息不会重复查询。
+- Bot 可调用无参数工具 `refresh_group_members` 主动刷新当前群，绕过一小时缓存期限。工具复用同一份缓存、JSON 快照和系统提醒；若已有后台刷新，则等待同一查询。成功返回最新人数和近期成员索引；失败会明确报告，并保留原有缓存。
+- 根据有效的最后发言时间筛选近 7 天成员，按最近发言排序，最多列出 30 人，不含 Bot 自己。活跃人数表示近期发言人数，不是发言频率排名；未知时间不代表不活跃。
+- 同时显示群名片、QQ 昵称和 QQ 号；收到消息时立即更新发送者资料。名称只作为转义后的资料使用，同名和外号不明确时不应猜测身份。
+- 索引通过当前聊天流的 `actor` 系统提醒注入，并在请求前移至最后一条用户消息的文本末尾，不影响其他群或其他插件的提醒。聊天组件须订阅 `actor` 提醒。
+- 完整资料保存在 `data/json_storage/snowluma_extension/group_members_qq_<bot_id>_<group_id>.json`，按平台、Bot 和群隔离；每分钟合并写盘，正常卸载时保存未写入数据。仅保存群概况、成员账号、两种名称和最后发言时间，不保存聊天正文或另一份活跃名单。
+- 重启时读取快照并重新生成索引。资料未获取、已过期或查询失败时保留已知资料并标注可能不完整，不阻塞聊天等待全群查询。
+
+JSON 快照属于可重建缓存，不提供异常退出时的原子写入保证；快照损坏时会记录警告并重新查询群资料。
+
+## 群打卡与任务生命周期
+
+手动打卡、定时打卡和启动补打共用按群保存的成功日期。同一天一个群成功后不会重复打卡，也不会阻止其他群；接口失败的群不记录完成，可重新尝试。记录保存在 `data/json_storage/snowluma_extension/sign_record.json`。
+
+定时打卡使用 `scheduled_sign.sign_time` 指定的有效 `HH:MM` 时间。无效时间会记录错误并跳过注册，不会静默改成其他时间。插件卸载时取消启动订阅、打卡计划、延迟任务和自动身份查询。
+
+QQ 原生表情通过 `face_intercept_handler` 将文本标记转换成消息段，不提供独立的 `send_face` 动作。Bot 身份查询使用当前消息对应的 QQ 适配器，同群、同流并发刷新会合并。
 
 ## 配置说明
 
@@ -77,6 +102,7 @@ QQ 平台扩展插件，为 Bot 提供群管理、消息操作和信息查询能
 | `features.enable_group_sign` | `true` | 群打卡 |
 | `features.enable_kick` | `false` | 踢出群成员 |
 | `features.enable_get_group_member_info` | `true` | 获取群成员信息/列表/群信息 |
+| `features.enable_group_members_reminder` | `true` | 群成员索引与主动刷新工具共用开关，提醒注入聊天上下文末尾 |
 | `features.enable_get_group_notice` | `false` | 获取群公告列表 |
 | `features.enable_get_essence_msg` | `true` | 获取群精华消息列表 |
 | `features.enable_get_group_honor` | `true` | 获取群荣誉信息 |

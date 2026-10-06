@@ -9,18 +9,21 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from src.app.plugin_system.api import adapter_api, prompt_api
 from src.app.plugin_system.api.log_api import get_logger
 from src.app.plugin_system.base import BaseEventHandler
 from src.app.plugin_system.types import EventType, Message, SystemReminderBucket
 from src.core.prompt import SystemReminderInsertType
-from src.kernel.concurrency import get_task_manager
 from src.kernel.event import EventDecision
 
-from .adapter_client import call_qq_adapter_api
+from .adapter_client import call_qq_adapter_api, get_qq_adapter_signature
 from .actions import _coerce_int_if_digit
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Coroutine
+    from ..config import SnowLumaExtensionConfig
 
 logger = get_logger("snowluma_extension")
 
@@ -54,6 +57,7 @@ _PERMISSION_ITEMS: tuple[tuple[str, str], ...] = (
 
 # 每群刷新时间缓存：group_id -> 最近刷新时间戳
 _refreshed_at: dict[str, float] = {}
+_refreshing: set[str] = set()
 
 
 def _get_ttl_seconds(config: Any) -> int:
@@ -347,6 +351,7 @@ async def fetch_and_update_bot_role(
     config: Any,
     force: bool = False,
     source: str = "auto",
+    adapter_signature: str | None = None,
 ) -> None:
     """查询 bot 在当前群的成员资料与群荣誉，并写入流 reminder。
 
@@ -356,76 +361,69 @@ async def fetch_and_update_bot_role(
         config: 插件配置实例。
         force: 为 True 时忽略 TTL 强制刷新（bot 主动查询自己时使用）。
         source: 刷新来源（auto=后台自动 / self_query=bot 主动查询自己）。
+        adapter_signature: 当前消息或查询使用的适配器签名。
     """
 
     if not stream_id or not group_id:
         return
 
-    if not force and not _should_refresh(group_id, config):
+    signature = adapter_signature or get_qq_adapter_signature()
+    if signature is None:
         return
-
-    try:
-        bot_info = await adapter_api.get_bot_info_by_platform("qq")
-    except Exception:
-        bot_info = None
-    if not bot_info or not bot_info.get("bot_id"):
+    cache_key = f"{signature}:{stream_id}:{group_id}"
+    if cache_key in _refreshing or (not force and not _should_refresh(cache_key, config)):
         return
-    bot_id = str(bot_info["bot_id"])
-
-    gid = _coerce_int_if_digit(group_id)
+    _refreshing.add(cache_key)
     try:
+        adapter = adapter_api.get_adapter(signature)
+        if adapter is None:
+            return
+        bot_info = await adapter.get_bot_info()
+        if not bot_info or not bot_info.get("bot_id"):
+            return
+        bot_id = str(bot_info["bot_id"])
+        gid = _coerce_int_if_digit(group_id)
         member_resp = await call_qq_adapter_api(
             "get_group_member_info",
             {"group_id": gid, "user_id": _coerce_int_if_digit(bot_id), "no_cache": True},
             timeout=30.0,
+            adapter_signature=signature,
         )
-    except Exception as exc:
-        logger.warning(f"查询 bot 群成员信息失败: group_id={group_id}, error={exc}")
-        return
-
-    member_data = member_resp.get("data") if isinstance(member_resp, dict) else None
-    if not isinstance(member_data, dict) or not member_data:
-        logger.warning(f"bot 群成员信息为空: group_id={group_id}")
-        return
-
-    honor_data: dict[str, Any] | None = None
-    try:
+        member_data = member_resp.get("data")
+        if (
+            member_resp.get("status") != "ok"
+            or member_resp.get("retcode") not in (None, 0)
+            or not isinstance(member_data, dict)
+            or not member_data
+        ):
+            logger.warning(f"bot 群成员信息查询失败或为空: group_id={group_id}")
+            return
         honor_resp = await call_qq_adapter_api(
             "get_group_honor_info",
             {"group_id": gid, "type": "all"},
             timeout=30.0,
+            adapter_signature=signature,
         )
-        candidate = honor_resp.get("data") if isinstance(honor_resp, dict) else None
-        if isinstance(candidate, dict):
-            honor_data = candidate
-    except Exception as exc:
-        logger.warning(f"查询群荣誉信息失败: group_id={group_id}, error={exc}")
-
-    # 查询群名（仅用于日志展示，失败不阻塞主流程）
-    group_name = ""
-    try:
+        candidate = honor_resp.get("data")
+        honor_data = candidate if honor_resp.get("status") == "ok" and isinstance(candidate, dict) else None
         group_resp = await call_qq_adapter_api(
             "get_group_info",
             {"group_id": gid, "no_cache": True},
             timeout=30.0,
+            adapter_signature=signature,
         )
-        group_data = group_resp.get("data") if isinstance(group_resp, dict) else None
-        if isinstance(group_data, dict):
-            group_name = str(group_data.get("group_name", "") or "").strip()
+        group_data = group_resp.get("data")
+        group_name = str(group_data.get("group_name", "") or "").strip() if group_resp.get("status") == "ok" and isinstance(group_data, dict) else ""
+        await update_bot_role_reminder(
+            stream_id=stream_id, group_id=group_id, bot_id=bot_id,
+            member_data=member_data, honor_data=honor_data, config=config,
+            source=source, group_name=group_name,
+        )
+        _mark_refreshed(cache_key)
     except Exception as exc:
-        logger.debug(f"查询群名失败: group_id={group_id}, error={exc}")
-
-    await update_bot_role_reminder(
-        stream_id=stream_id,
-        group_id=group_id,
-        bot_id=bot_id,
-        member_data=member_data,
-        honor_data=honor_data,
-        config=config,
-        source=source,
-        group_name=group_name,
-    )
-    _mark_refreshed(group_id)
+        logger.warning(f"查询 bot 群身份失败: group_id={group_id}, error={exc}")
+    finally:
+        _refreshing.discard(cache_key)
 
 
 class BotRoleReminderHandler(BaseEventHandler):
@@ -455,12 +453,8 @@ class BotRoleReminderHandler(BaseEventHandler):
             tuple[EventDecision, dict]: 事件决策与参数。
         """
 
-        config = getattr(self.plugin, "config", None)
-        if config is None:
-            return EventDecision.SUCCESS, params
-
-        bot_role_cfg = getattr(config, "bot_role", None)
-        if bot_role_cfg is None or not bool(getattr(bot_role_cfg, "enable", False)):
+        config = cast("SnowLumaExtensionConfig | None", self.plugin.config)
+        if config is None or not config.plugin.enabled or not config.bot_role.enable:
             return EventDecision.SUCCESS, params
 
         message = params.get("message")
@@ -476,14 +470,16 @@ class BotRoleReminderHandler(BaseEventHandler):
         if not stream_id or not group_id:
             return EventDecision.SUCCESS, params
 
-        get_task_manager().create_task(
+        signature = params.get("adapter_signature")
+        start = cast("Callable[[Coroutine[Any, Any, Any], str], None]", self.plugin.start_background_task)
+        start(
             fetch_and_update_bot_role(
                 stream_id=stream_id,
                 group_id=str(group_id),
                 config=config,
+                adapter_signature=signature if isinstance(signature, str) else None,
             ),
-            name="snowluma_extension_bot_role_refresh",
-            daemon=True,
+            "snowluma_extension_bot_role_refresh",
         )
         return EventDecision.SUCCESS, params
 
