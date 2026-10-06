@@ -7,7 +7,7 @@
     "plugin_api": "1.0.0",
     "prompt_api": "1.0.0",
     "storage_api": "1.0.0",
-    "stream_api": "1.0.0"
+    "stream_api": "2.0.0"
   },
   "display_name": "SnowLuma 扩展能力",
   "version": "1.0.11",
