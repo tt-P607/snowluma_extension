@@ -91,7 +91,7 @@ async def call_qq_adapter_api(
             f"QQ 适配器命令调用异常: action={action_name}, params={params}, error={exc}"
         )
         return {
-            "status": "error",
+            "status": "timeout" if isinstance(exc, TimeoutError) else "unknown",
             "message": f"QQ 适配器命令调用异常：{exc}",
             "data": None,
         }

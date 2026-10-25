@@ -41,6 +41,36 @@ def _coerce_int_if_digit(value: Any) -> Any:
     return value
 
 
+def _checked_send_response(action_name: str, response: dict[str, Any]) -> dict[str, Any]:
+    """消息发送操作必须带有效消息 ID；管理操作不要求消息 ID。"""
+    message_actions = {
+        "send_msg", "send_group_msg", "send_private_msg",
+        "send_group_forward_msg", "send_private_forward_msg",
+        "forward_group_single_msg", "forward_friend_single_msg",
+    }
+    if action_name not in message_actions or response.get("status") != "ok":
+        return response
+    retcode = response.get("retcode")
+    if type(retcode) is not int or retcode != 0:
+        return response
+    data = response.get("data")
+    message_id = data.get("message_id") if isinstance(data, dict) else None
+    valid_id = (
+        type(message_id) is int and message_id != 0
+    ) or (
+        isinstance(message_id, str)
+        and message_id.strip().lstrip("-").isdigit()
+        and int(message_id.strip()) != 0
+    )
+    if valid_id:
+        return response
+    return {
+        **response, "status": "unknown",
+        "message": "平台受理了发送请求，但未提供有效消息 ID，最终发送结果未确认",
+        "wording": "平台受理了发送请求，但未提供有效消息 ID，最终发送结果未确认",
+    }
+
+
 def _get_group_id_from_context(action: BaseAction) -> Any:
     """从当前上下文消息中提取 group_id。"""
 
@@ -120,7 +150,17 @@ def _format_adapter_failure(action: str, resp: dict[str, Any], error_hint: str =
 
     # 常见权限/失败原因提炼
     lowered = detail.lower()
-    if "权限" in detail or "permission" in lowered or "not admin" in lowered:
+    status = str(resp.get("status") or "").strip().lower()
+    if status in ("timeout", "async", "unknown") or "超时" in detail or "timeout" in lowered:
+        if status == "async":
+            uncertainty = "请求已异步受理，但执行结果尚未确认"
+        else:
+            uncertainty = "请求超时或连接结果未知，平台可能已执行"
+        result = (
+            f"{action}：{uncertainty}，不要自动重试。\n"
+            f"- 原始信息：{detail}"
+        )
+    elif "权限" in detail or "permission" in lowered or "not admin" in lowered:
         result = (
             f"{action} 失败：权限不足。\n"
             "- 需要机器人为群主/管理员\n"
@@ -130,13 +170,6 @@ def _format_adapter_failure(action: str, resp: dict[str, Any], error_hint: str =
     elif "不存在" in detail or "not found" in lowered:
         result = (
             f"{action} 失败：目标不存在或已失效。\n"
-            f"- 原始信息：{detail}"
-        )
-    elif "超时" in detail or "timeout" in lowered:
-        result = (
-            f"{action} 失败：请求超时。\n"
-            "- 请检查 QQ 适配器是否已连接平台服务\n"
-            "- 请检查 QQ 平台服务是否正常\n"
             f"- 原始信息：{detail}"
         )
     else:
@@ -180,12 +213,14 @@ async def _call_qq_adapter_api(
     """
 
     logger.debug(f"调用 QQ 适配器 API: action={action_name}, params={params}")
-    resp = await call_qq_adapter_api(action_name, params, timeout=timeout)
+    resp = _checked_send_response(
+        action_name, await call_qq_adapter_api(action_name, params, timeout=timeout),
+    )
     logger.debug(f"QQ 适配器 API 响应: action={action_name}, resp={resp}")
 
     status = str(resp.get("status") or "").strip().lower()
     retcode = resp.get("retcode")
-    if status == "ok" and (retcode == 0 or retcode is None):
+    if status == "ok" and type(retcode) is int and retcode == 0:
         logger.info(f"QQ 适配器 API 调用成功: action={action_name}")
         return True, "ok"
 
@@ -214,12 +249,14 @@ async def _call_qq_adapter_api_with_data(
     """
 
     logger.debug(f"调用 QQ 适配器 API: action={action_name}, params={params}")
-    resp = await call_qq_adapter_api(action_name, params, timeout=timeout)
+    resp = _checked_send_response(
+        action_name, await call_qq_adapter_api(action_name, params, timeout=timeout),
+    )
     logger.debug(f"QQ 适配器 API 响应: action={action_name}, resp={resp}")
 
     status = str(resp.get("status") or "").strip().lower()
     retcode = resp.get("retcode")
-    if status == "ok" and (retcode == 0 or retcode is None):
+    if status == "ok" and type(retcode) is int and retcode == 0:
         logger.info(f"QQ 适配器 API 调用成功: action={action_name}")
         return True, "ok", resp.get("data")
 
